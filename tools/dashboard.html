@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SABITA Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',sans-serif;background:#0f1117;color:#e0e0e0;padding:12px}
+.hdr{display:flex;justify-content:space-between;align-items:center;background:#1a1d2e;padding:14px 18px;border-radius:10px;border-bottom:2px solid #3b82f6;margin-bottom:12px}
+.hdr h1{font-size:18px;color:#3b82f6;letter-spacing:2px}
+.links{display:flex;gap:16px;font-size:12px}
+.link-item{display:flex;align-items:center;gap:6px}
+.dot{width:9px;height:9px;border-radius:50%;background:#ef4444;display:inline-block}
+.dot.on{background:#22c55e}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+@media (max-width:980px){.grid{grid-template-columns:1fr}}
+.card{background:#1a1d2e;border-radius:10px;padding:14px;margin-bottom:12px;border:1px solid #2a2d3e}
+.tt{font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid #2a2d3e}
+
+.sd{text-align:center;font-size:16px;font-weight:bold;padding:12px;border-radius:8px;margin-bottom:8px;background:#252940;color:#64748b}
+.sd.arrived{color:#f59e0b}.sd.moving{color:#22c55e}.sd.finished{color:#a855f7}.sd.manual{color:#3b82f6}
+.rt{text-align:center;padding:6px;background:#252940;border-radius:6px;font-size:12px;color:#22c55e;font-family:monospace;margin-bottom:8px;min-height:22px}
+.ng{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px}
+.nb{text-align:center;padding:12px;border-radius:8px;background:#252940}
+.nb.cur{background:#1e3a5f;border:2px solid #3b82f6}
+.nl{font-size:10px;color:#64748b;margin-bottom:4px}
+.nv{font-size:28px;font-weight:bold}
+.nv.p{color:#64748b}.nv.c{color:#3b82f6}.nv.n{color:#22c55e}.nv.d{color:#a855f7}
+.an{text-align:center;padding:8px;background:#252940;border-radius:6px;margin-bottom:8px;font-size:13px;font-weight:bold;color:#f59e0b;min-height:30px}
+.pb{background:#2a2d3e;border-radius:6px;height:9px;overflow:hidden;margin-bottom:4px}
+.pf{background:linear-gradient(90deg,#3b82f6,#22c55e);height:100%;transition:width .4s}
+.pt{text-align:center;font-size:11px;color:#64748b}
+
+canvas#mapCanvas{width:100%;background:#0f1117;border-radius:8px;display:block}
+
+.sf{display:flex;justify-content:center;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+.sb{width:50px;height:50px;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-weight:bold;background:#2a2d3e;border:2px solid #3a3d4e;transition:.15s}
+.sb.hi{background:#22c55e;border-color:#16a34a;color:#000}
+.sl{font-size:9px;opacity:.7}.sv{font-size:13px}
+.rw{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;text-align:center;margin-bottom:8px}
+.rc{font-size:10px;color:#94a3b8}.rv{color:#f59e0b;font-size:11px}
+
+.gauge{position:relative;height:34px;background:#2a2d3e;border-radius:6px;margin:6px 0 10px;overflow:hidden}
+.gauge .mid{position:absolute;left:50%;top:0;bottom:0;width:2px;background:#3a3d4e}
+.gauge .marker{position:absolute;top:2px;bottom:2px;width:6px;border-radius:3px;background:#f59e0b;transition:left .1s}
+.gauge .lbl{position:absolute;top:50%;transform:translateY(-50%);font-size:10px;color:#64748b}
+.gauge .lbl.left{left:6px}.gauge .lbl.right{right:6px}
+
+.metrics{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:6px}
+.metric{text-align:center;background:#252940;border-radius:6px;padding:8px}
+.metric .l{font-size:9px;color:#64748b}
+.metric .v{font-size:16px;font-weight:bold;color:#3b82f6}
+
+.chart-wrap{margin-bottom:14px}
+.chart-wrap .lbl{font-size:11px;color:#94a3b8;margin-bottom:4px}
+canvas.chart{width:100%;height:110px!important}
+
+.sr{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.sr label{font-size:11px;color:#94a3b8;white-space:nowrap;min-width:78px}
+.sl2{flex:1;-webkit-appearance:none;height:5px;border-radius:3px;background:#2a2d3e;outline:none}
+.sl2::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#3b82f6;cursor:pointer}
+.sv2{font-size:12px;font-weight:bold;color:#3b82f6;min-width:44px;text-align:right}
+.num2{width:64px;background:#0f1117;border:1px solid #3a3d4e;color:#e0e0e0;border-radius:4px;padding:3px 5px;font-size:11px}
+
+.pid-current{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px}
+.pid-current .box{background:#14532d;border-radius:6px;padding:8px;text-align:center}
+.pid-current .box .l{font-size:9px;color:#86efac}
+.pid-current .box .v{font-size:15px;font-weight:bold;color:#22c55e}
+
+.btn{width:100%;padding:11px;border:none;border-radius:8px;color:#fff;font-weight:bold;font-size:13px;cursor:pointer;margin-bottom:8px}
+.btn:active{filter:brightness(1.2)}
+.btn-red{background:#dc2626}.btn-green{background:#16a34a}.btn-blue{background:#2563eb}
+.btn-yellow{background:#f59e0b;color:#111}.btn-purple{background:#7c3aed}
+
+.manual-status{text-align:center;padding:8px;border-radius:8px;background:#252940;color:#94a3b8;font-weight:bold;margin-bottom:8px;font-size:12px}
+.manual-status.on{background:#14532d;color:#22c55e}
+.pad{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;align-items:center;margin:8px 0}
+.pad .empty{height:40px}
+.pad button{height:40px;margin:0}
+
+.qh{font-size:11px;color:#64748b;max-height:140px;overflow-y:auto;margin-bottom:8px}
+.qh div{padding:3px 0;border-bottom:1px solid #1f2233}
+.qd{text-align:center;font-size:12px;font-weight:bold;padding:10px;border-radius:8px;background:#252940;color:#22c55e;min-height:36px;word-break:break-all;margin-bottom:8px}
+.qd.em{color:#4a4d5e;font-size:11px}
+.ds{text-align:center;padding:6px;border-radius:6px;margin-bottom:6px;font-size:12px;font-weight:bold}
+.ds.rdy{background:#14532d;color:#22c55e}.ds.err{background:#451a1a;color:#ef4444}.ds.pl{background:#1e3a5f;color:#3b82f6}
+.di{text-align:center;font-size:11px;color:#94a3b8;font-style:italic;min-height:16px;margin-bottom:6px}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+<h1>SABITA DASHBOARD</h1>
+<div class="links">
+  <div class="link-item"><span class="dot" id="dotServer"></span>Server laptop</div>
+  <div class="link-item"><span class="dot" id="dotEsp"></span>Robot (ESP32)</div>
+</div>
+</div>
+
+<div class="grid">
+<div class="col-left">
+
+  <div class="card">
+    <div class="tt">Status Misi & Navigasi</div>
+    <div class="sd" id="SD">Menghubungkan...</div>
+    <div class="rt" id="RT">Rute ACO belum dihitung</div>
+    <div class="ng">
+      <div class="nb"><div class="nl">SEBELUMNYA</div><div class="nv p" id="NP">-</div></div>
+      <div class="nb cur"><div class="nl">SEKARANG</div><div class="nv c" id="NC">-</div></div>
+      <div class="nb"><div class="nl">BERIKUTNYA</div><div class="nv n" id="NN">-</div></div>
+    </div>
+    <div class="an" id="NA">-</div>
+    <div class="pb"><div class="pf" id="PF" style="width:0%"></div></div>
+    <div class="pt" id="PT">0 / 6 node dikunjungi</div>
+  </div>
+
+  <div class="card">
+    <div class="tt">Graf Pameran (posisi sesuai banner fisik)</div>
+    <canvas id="mapCanvas" width="480" height="420"></canvas>
+  </div>
+
+  <div class="card">
+    <div class="tt">Audio DFPlayer</div>
+    <div class="ds err" id="DF">DFPlayer: menunggu...</div>
+    <div class="di" id="DI"></div>
+  </div>
+
+  <div class="card">
+    <div class="tt">QR &amp; Log</div>
+    <div class="qd em" id="QD">Menunggu scan...</div>
+    <div class="qh" id="QH"></div>
+    <a href="/download-log" class="btn btn-purple" style="text-decoration:none;display:block;text-align:center">
+      ⬇ DOWNLOAD LOG CSV
+    </a>
+  </div>
+
+</div>
+<div class="col-right">
+
+  <div class="card">
+    <div class="tt">Line Follower Real-Time</div>
+    <div class="sf">
+      <div class="sb" id="B1"><div class="sl">S1</div><div class="sv" id="V1">0</div></div>
+      <div class="sb" id="B2"><div class="sl">S2</div><div class="sv" id="V2">0</div></div>
+      <div class="sb" id="B3"><div class="sl">S3</div><div class="sv" id="V3">0</div></div>
+      <div class="sb" id="B4"><div class="sl">S4</div><div class="sv" id="V4">0</div></div>
+      <div class="sb" id="B6"><div class="sl">S6</div><div class="sv" id="V6">0</div></div>
+    </div>
+    <div class="rw">
+      <div class="rc">S1<br><span class="rv" id="R1">-</span></div>
+      <div class="rc">S2<br><span class="rv" id="R2">-</span></div>
+      <div class="rc">S3<br><span class="rv" id="R3">-</span></div>
+      <div class="rc">S4<br><span class="rv" id="R4">-</span></div>
+      <div class="rc">S6<br><span class="rv" id="R6">-</span></div>
+    </div>
+    <div class="lbl" style="font-size:10px;color:#64748b;margin-bottom:2px">Posisi tertimbang (-2 kiri .. +2 kanan)</div>
+    <div class="gauge"><div class="mid"></div><span class="lbl left">-2</span><span class="lbl right">+2</span>
+      <div class="marker" id="posMarker" style="left:50%"></div></div>
+    <div class="metrics">
+      <div class="metric"><div class="l">ARAH</div><div class="v" id="mArah" style="font-size:12px">-</div></div>
+      <div class="metric"><div class="l">ERROR</div><div class="v" id="mErr">0.00</div></div>
+      <div class="metric"><div class="l">CORRECTION</div><div class="v" id="mCorr">0.00</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="tt">Grafik Live (5 detik terakhir)</div>
+    <div class="chart-wrap"><div class="lbl">ADC Sensor S1-S6</div><canvas class="chart" id="chartAdc"></canvas></div>
+    <div class="chart-wrap"><div class="lbl">PID: error vs correction</div><canvas class="chart" id="chartPid"></canvas></div>
+    <div class="chart-wrap"><div class="lbl">Estimasi kecepatan motor R/L (dihitung di dashboard)</div><canvas class="chart" id="chartSpeed"></canvas></div>
+  </div>
+
+  <div class="card">
+    <div class="tt">PID Tuning</div>
+    <div class="pid-current">
+      <div class="box"><div class="l">Kp aktif</div><div class="v" id="curKp">-</div></div>
+      <div class="box"><div class="l">Ki aktif</div><div class="v" id="curKi">-</div></div>
+      <div class="box"><div class="l">Kd aktif</div><div class="v" id="curKd">-</div></div>
+    </div>
+    <div class="sr"><label>Kp (0-100)</label><input type="range" class="sl2" id="Kp" min="0" max="100" step="0.5" value="30">
+      <input type="number" class="num2" id="KpN" min="0" max="100" step="0.5" value="30"></div>
+    <div class="sr"><label>Ki (0-1)</label><input type="range" class="sl2" id="Ki" min="0" max="1" step="0.005" value="0.01">
+      <input type="number" class="num2" id="KiN" min="0" max="1" step="0.005" value="0.01"></div>
+    <div class="sr"><label>Kd (0-50)</label><input type="range" class="sl2" id="Kd" min="0" max="50" step="0.5" value="15">
+      <input type="number" class="num2" id="KdN" min="0" max="50" step="0.5" value="15"></div>
+    <button class="btn btn-green" onclick="applyPID()">APPLY PID KE ROBOT</button>
+    <button class="btn btn-blue" onclick="W('TEST:LINEFOLLOW')">▶ TES LINE FOLLOW (TANPA QR)</button>
+    <button class="btn btn-red" onclick="W('TEST:STOP')">■ STOP TES</button>
+  </div>
+
+  <div class="card">
+    <div class="tt">Kontrol</div>
+    <button class="btn btn-red" onclick="W('RESET')">RESET MISI</button>
+    <button class="btn btn-yellow" onclick="W('STOP_AUDIO')">STOP AUDIO</button>
+    <div class="sr"><label>Speed (BASE)</label><input type="range" class="sl2" id="SP" min="0" max="255" value="70"><span class="sv2" id="SPV">70</span></div>
+    <div class="sr"><label>Trim Kiri</label><input type="range" class="sl2" id="LT" min="-50" max="50" value="10"><span class="sv2" id="LTV">10</span></div>
+    <div class="sr"><label>Trim Kanan</label><input type="range" class="sl2" id="RT" min="-50" max="50" value="0"><span class="sv2" id="RTV">0</span></div>
+    <div class="sr"><label>Threshold</label><input type="range" class="sl2" id="TH" min="500" max="3500" value="2993"><span class="sv2" id="THV" style="color:#a855f7">2993</span></div>
+    <div class="sr"><label>Volume</label><input type="range" class="sl2" id="VOL" min="0" max="18" value="18"><span class="sv2" id="VV" style="color:#f59e0b">18</span></div>
+
+    <div class="tt" style="margin-top:6px">Mode Pindah Manual</div>
+    <div class="manual-status" id="MS">Mode manual nonaktif</div>
+    <button class="btn btn-blue" id="MB" onclick="toggleManual()">AKTIFKAN MODE MANUAL</button>
+    <div class="pad">
+      <div class="empty"></div><button class="btn btn-blue" data-move="MAJU" style="margin:0">⬆</button><div class="empty"></div>
+      <button class="btn btn-yellow" data-move="KIRI" style="margin:0">⬅</button>
+      <button class="btn btn-red" data-move="STOP" style="margin:0">■</button>
+      <button class="btn btn-yellow" data-move="KANAN" style="margin:0">➡</button>
+      <div class="empty"></div><button class="btn btn-blue" data-move="MUNDUR" style="margin:0">⬇</button><div class="empty"></div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<script>
+// ================= TOPOLOGI (identik dgn simulasi/sabita_topology.py) =================
+const NODES = ['A','B','C','D','E','F'];
+const NAMA_KARYA = {A:'Mona Lisa',B:'The Scream',C:'The Kiss',D:'Starry Night',E:'Sunflowers',F:'Guernica'};
+const POS = { E:[0.000,2.000], A:[1.902,0.618], B:[1.176,-1.618], C:[-1.176,-1.618], D:[-1.902,0.618], F:[0.000,0.000] };
+const EDGES = [['A','B',1.07],['A','E',1.51],['A','F',1.21],['B','C',1.80],['B','F',1.16],
+               ['C','D',1.68],['C','F',1.41],['D','E',1.49],['D','F',1.07],['E','F',1.54]];
+
+// ================= STATE =================
+let curr='-', prev='-', next='-', routeStr='', routeNodes=[];
+let visitedSet = new Set();
+let manualOn=false;
+
+// ================= WEBSOCKET KE SERVER LOKAL =================
+let ws, retryTimer;
+function W(m){ if(ws && ws.readyState===1) ws.send(m); }
+function connect(){
+  ws = new WebSocket('ws://'+location.host+'/ws');
+  ws.onopen = ()=>{ g('dotServer').classList.add('on'); clearInterval(retryTimer); };
+  ws.onclose = ()=>{ g('dotServer').classList.remove('on'); g('dotEsp').classList.remove('on');
+    retryTimer=setInterval(connect,2000); };
+  ws.onmessage = (e)=>{ try{ onMsg(JSON.parse(e.data)); }catch(x){ console.log(x); } };
+}
+function g(id){ return document.getElementById(id); }
+
+function onMsg(d){
+  if(d.type==='esplink'){ g('dotEsp').classList.toggle('on', !!d.connected); }
+  else if(d.type==='state') onState(d);
+  else if(d.type==='nav') onNav(d);
+  else if(d.type==='route') onRoute(d);
+  else if(d.type==='dfp') onDfp(d);
+  else if(d.type==='qr') onQr(d);
+  else if(d.type==='sensor') onSensor(d);
+  else if(d.type==='mode') onMode(d);
+}
+
+function onState(d){
+  const s=g('SD'); s.className='sd';
+  const map={IDLE:['Scan QR untuk memulai misi',''],
+    ARRIVED:['Sampai di node - memutar audio','arrived'],
+    MOVING:['Robot bergerak...','moving'],
+    FINISHED:['Misi selesai!','finished'],
+    MANUAL:['Mode manual aktif - robot bisa dipindah','manual']};
+  const m=map[d.state]||[d.state,''];
+  s.textContent=m[0]; if(m[1]) s.classList.add(m[1]);
+}
+function onNav(d){
+  prev=d.prev; curr=d.curr; next=d.next;
+  if(curr!=='-') visitedSet.add(curr);
+  g('NP').textContent=d.prev; g('NC').textContent=d.curr;
+  const nn=g('NN'); nn.textContent=d.next;
+  nn.className='nv '+(d.next==='SELESAI'?'d':d.next!=='-'?'n':'p');
+  g('NA').textContent = d.art!=='-' ? 'Karya: '+d.art : '-';
+  const pct = d.total>0 ? (d.step/d.total)*100 : 0;
+  g('PF').style.width=pct+'%';
+  g('PT').textContent=d.step+' / '+d.total+' node dikunjungi';
+}
+function onRoute(d){
+  routeStr=d.route;
+  routeNodes = d.route.split('-');
+  g('RT').textContent='Rute: '+d.route+' ('+d.length+' m)';
+}
+function onDfp(d){
+  const f=g('DF'); f.className='ds';
+  if(d.status==='ready'){ f.classList.add('rdy'); f.textContent='DFPlayer: Siap'; g('DI').textContent=''; }
+  else if(d.status==='playing'){ f.classList.add('pl'); f.textContent='Playing: '+d.name; g('DI').textContent=d.desc||''; }
+  else { f.classList.add('err'); f.textContent='DFPlayer: Error'; }
+}
+function onQr(d){
+  const q=g('QD'); q.textContent=d.data; q.classList.remove('em');
+  const h=g('QH'), v=document.createElement('div');
+  v.textContent=new Date().toLocaleTimeString()+' > '+d.data;
+  h.insertBefore(v,h.firstChild);
+  if(h.children.length>20) h.removeChild(h.lastChild);
+}
+function onMode(d){
+  manualOn = (String(d.manual)==='1');
+  g('MS').textContent = manualOn?'Mode manual aktif':'Mode manual nonaktif';
+  g('MS').classList.toggle('on', manualOn);
+  g('MB').textContent = manualOn?'KELUAR MODE MANUAL / SIAP SCAN QR':'AKTIFKAN MODE MANUAL';
+  if(d.speed!==undefined){ g('SP').value=d.speed; g('SPV').textContent=d.speed; }
+}
+
+// ---- sensor + PID + charts ----
+const HIST_MS = 5000;
+let adcHist=[], pidHist=[], speedHist=[];
+let lastBase=70, lastLTrim=10, lastRTrim=0;
+
+function onSensor(d){
+  US('B1','V1',d.s1); US('B2','V2',d.s2); US('B3','V3',d.s3); US('B4','V4',d.s4); US('B6','V6',d.s6);
+  g('R1').textContent=d.r1; g('R2').textContent=d.r2; g('R3').textContent=d.r3; g('R4').textContent=d.r4; g('R6').textContent=d.r6;
+  g('mArah').textContent=d.arah;
+  g('mErr').textContent=Number(d.err).toFixed(2);
+  g('mCorr').textContent=Number(d.corr).toFixed(2);
+  g('curKp').textContent=Number(d.kp).toFixed(2);
+  g('curKi').textContent=Number(d.ki).toFixed(3);
+  g('curKd').textContent=Number(d.kd).toFixed(2);
+
+  const pos = Number(d.pos);
+  const pct = Math.max(0, Math.min(100, (pos+2)/4*100));
+  g('posMarker').style.left = pct+'%';
+
+  const t = performance.now();
+  adcHist.push({t, r1:+d.r1, r2:+d.r2, r3:+d.r3, r4:+d.r4, r6:+d.r6});
+  pidHist.push({t, err:+d.err, corr:+d.corr});
+  const speedR = clamp((lastBase+lastRTrim) - (+d.corr), 0, 255);
+  const speedL = clamp((lastBase+lastLTrim) + (+d.corr), 0, 255);
+  speedHist.push({t, speedR, speedL});
+  const cutoff = t - HIST_MS;
+  adcHist = adcHist.filter(p=>p.t>=cutoff);
+  pidHist = pidHist.filter(p=>p.t>=cutoff);
+  speedHist = speedHist.filter(p=>p.t>=cutoff);
+  updateCharts();
+}
+function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+function US(bi,vi,v){ g(vi).textContent=v; g(bi).classList.toggle('hi', v===1); }
+
+// ================= CANVAS: GRAF PAMERAN =================
+const cv = g('mapCanvas'), ctx = cv.getContext('2d');
+const BX=[-2.8,2.8], BY=[-2.4,2.7];
+function toCanvas(x,y){
+  const px = (x-BX[0])/(BX[1]-BX[0]) * cv.width;
+  const py = cv.height - (y-BY[0])/(BY[1]-BY[0]) * cv.height;
+  return [px,py];
+}
+function drawMap(){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.strokeStyle='#3a3d4e'; ctx.lineWidth=1.5; ctx.fillStyle='#64748b'; ctx.font='10px Segoe UI'; ctx.textAlign='center';
+  EDGES.forEach(([a,b,w])=>{
+    const [x1,y1]=toCanvas(...POS[a]), [x2,y2]=toCanvas(...POS[b]);
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    ctx.fillText(w.toFixed(2), (x1+x2)/2, (y1+y2)/2);
+  });
+
+  if(routeNodes.length>1){
+    ctx.save();
+    ctx.strokeStyle='#3b82f6'; ctx.lineWidth=2.5; ctx.setLineDash([6,5]);
+    ctx.beginPath();
+    routeNodes.forEach((n,i)=>{
+      if(!POS[n]) return;
+      const [x,y]=toCanvas(...POS[n]);
+      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    });
+    ctx.stroke(); ctx.restore();
+  }
+
+  if(curr!=='-' && next!=='-' && next!=='SELESAI' && POS[curr] && POS[next]){
+    ctx.save();
+    ctx.strokeStyle='#f59e0b'; ctx.lineWidth=3; ctx.setLineDash([5,4]);
+    const [x1,y1]=toCanvas(...POS[curr]), [x2,y2]=toCanvas(...POS[next]);
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    ctx.restore();
+  }
+
+  NODES.forEach(n=>{
+    const [x,y]=toCanvas(...POS[n]);
+    const isCurr = (n===curr);
+    ctx.beginPath(); ctx.arc(x,y,18,0,Math.PI*2);
+    ctx.fillStyle = isCurr ? '#22c55e' : (visitedSet.has(n) ? '#166534' : '#252940');
+    ctx.fill();
+    ctx.strokeStyle = '#3a3d4e'; ctx.lineWidth=2; ctx.stroke();
+    ctx.fillStyle='#fff'; ctx.font='bold 14px Segoe UI'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(n, x, y);
+    ctx.fillStyle='#94a3b8'; ctx.font='9px Segoe UI';
+    ctx.fillText(NAMA_KARYA[n], x, y+30);
+  });
+
+  if(curr!=='-' && POS[curr]){
+    const [x,y]=toCanvas(...POS[curr]);
+    const pulse = 4*Math.abs(Math.sin(performance.now()/300));
+    ctx.beginPath(); ctx.arc(x,y,22+pulse,0,Math.PI*2);
+    ctx.strokeStyle='#ef4444'; ctx.lineWidth=2; ctx.stroke();
+  }
+  requestAnimationFrame(drawMap);
+}
+requestAnimationFrame(drawMap);
+
+// ================= CHART.JS =================
+function mkChart(id, datasets){
+  return new Chart(g(id), {
+    type:'line',
+    data:{ datasets },
+    options:{
+      animation:false, responsive:true, maintainAspectRatio:false,
+      scales:{
+        x:{ type:'linear', ticks:{ color:'#64748b', font:{size:9} }, grid:{ color:'#2a2d3e' } },
+        y:{ ticks:{ color:'#64748b', font:{size:9} }, grid:{ color:'#2a2d3e' } }
+      },
+      plugins:{ legend:{ labels:{ color:'#94a3b8', font:{size:9}, boxWidth:10 } } },
+      elements:{ point:{ radius:0 }, line:{ tension:0.2, borderWidth:1.5 } }
+    }
+  });
+}
+const COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4'];
+const chartAdc = mkChart('chartAdc', ['r1','r2','r3','r4','r6'].map((k,i)=>(
+  { label:'S'+(k==='r6'?6:k[1]), data:[], borderColor:COLORS[i], backgroundColor:'transparent' })));
+const chartPid = mkChart('chartPid', [
+  { label:'error', data:[], borderColor:'#f59e0b', backgroundColor:'transparent' },
+  { label:'correction', data:[], borderColor:'#3b82f6', backgroundColor:'transparent' },
+]);
+const chartSpeed = mkChart('chartSpeed', [
+  { label:'speed R', data:[], borderColor:'#ef4444', backgroundColor:'transparent' },
+  { label:'speed L', data:[], borderColor:'#22c55e', backgroundColor:'transparent' },
+]);
+
+function updateCharts(){
+  const t0 = performance.now()-HIST_MS;
+  const rel = t => (t-t0)/1000;
+  ['r1','r2','r3','r4','r6'].forEach((k,i)=>{
+    chartAdc.data.datasets[i].data = adcHist.map(p=>({x:rel(p.t), y:p[k]}));
+  });
+  chartPid.data.datasets[0].data = pidHist.map(p=>({x:rel(p.t), y:p.err}));
+  chartPid.data.datasets[1].data = pidHist.map(p=>({x:rel(p.t), y:p.corr}));
+  chartSpeed.data.datasets[0].data = speedHist.map(p=>({x:rel(p.t), y:p.speedR}));
+  chartSpeed.data.datasets[1].data = speedHist.map(p=>({x:rel(p.t), y:p.speedL}));
+  chartAdc.update('none'); chartPid.update('none'); chartSpeed.update('none');
+}
+
+// ================= PID TUNING =================
+function syncPair(sliderId, numId){
+  const s=g(sliderId), n=g(numId);
+  s.addEventListener('input', ()=>{ n.value=s.value; });
+  n.addEventListener('input', ()=>{ s.value=n.value; });
+}
+syncPair('Kp','KpN'); syncPair('Ki','KiN'); syncPair('Kd','KdN');
+function applyPID(){
+  W('KP:'+g('Kp').value);
+  W('KI:'+g('Ki').value);
+  W('KD:'+g('Kd').value);
+}
+
+// ================= KONTROL LAIN =================
+function SL(id,vid,cmd,onApply){
+  const e=g(id);
+  e.addEventListener('input', ()=>{ g(vid).textContent=e.value; if(onApply) onApply(e.value); });
+  e.addEventListener('change', ()=>{ W(cmd+e.value); });
+}
+SL('SP','SPV','SPEED:', v=>{ lastBase=+v; });
+SL('LT','LTV','LTRIM:', v=>{ lastLTrim=+v; });
+SL('RT','RTV','RTRIM:', v=>{ lastRTrim=+v; });
+SL('TH','THV','THR:');
+SL('VOL','VV','VOL:');
+
+function toggleManual(){ W(manualOn ? 'MANUAL:OFF' : 'MANUAL:ON'); }
+document.querySelectorAll('[data-move]').forEach(b=>{
+  const mv=b.getAttribute('data-move');
+  const start=e=>{ e.preventDefault(); W('M:'+mv); };
+  const stop=e=>{ e.preventDefault(); if(mv!=='STOP') W('M:STOP'); };
+  b.addEventListener('mousedown',start); b.addEventListener('mouseup',stop); b.addEventListener('mouseleave',stop);
+  b.addEventListener('touchstart',start,{passive:false}); b.addEventListener('touchend',stop,{passive:false});
+});
+
+connect();
+</script>
+</body>
+</html>

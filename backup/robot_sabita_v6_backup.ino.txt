@@ -1,0 +1,1161 @@
+/*
+ * ============================================================
+ *  SABITA - Robot Pemandu Pameran v6
+ *  FULL INTEGRATION: Motor + Line Follower + QR + DFPlayer + ACO
+ * ============================================================
+ *  Alur kerja:
+ *    1. Boot -> tunggu scan QR pertama (auto-detect start node)
+ *    2. Jalankan ACO -> hasilkan rute optimal (closed tour)
+ *    3. Robot line-follow, berhenti tiap scan QR berhasil
+ *    4. Play audio sesuai QR yang ke-scan (tidak perlu cocok urutan)
+ *    5. Lanjut jalan ke node berikutnya dalam rute
+ *    6. Setelah semua node dikunjungi -> kembali ke start -> selesai
+ *
+ *  Pin Mapping:
+ *    BTS7960 M_KANAN: R_PWM=GPIO25, L_PWM=GPIO26, EN=5V
+ *    BTS7960 M_KIRI:  R_PWM=GPIO27, L_PWM=GPIO14, EN=5V
+ *    Line Follower:   S1=GPIO33, S2=GPIO32, S3=GPIO35,
+ *                     S4=GPIO34, S5=GPIO36, CLP=GPIO39
+ *    GM67 QR Code:    GPIO16(RX<-GM67 TX), GPIO17(TX->GM67 RX)
+ *    DFPlayer:        GPIO4(RX<-DFP TX), GPIO5(TX->DFP RX, R 1K)
+ *
+ *  QR format: "Node X, Art NAMA, Audio XXX"
+ *
+ *  SD Card (FAT32, copy urut satu-satu):
+ *    0001.wav=Mona Lisa(A) 0002.wav=The Scream(B) 0003.wav=The Kiss(C)
+ *    0004.wav=Starry Night(D) 0005.wav=Sunflowers(E) 0006.wav=Guernica(F)
+ *  NOTE: sesuaikan ulang jika mapping Node->Audio berbeda di lapangan
+ * ============================================================
+ */
+
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+#include "driver/adc.h"  // fix GPIO36/39 glitch saat WiFi aktif
+#include <WiFi.h>
+#include <WebServer.h>
+#include <WebSocketsServer.h>
+#include <HardwareSerial.h>
+#include <DFRobotDFPlayerMini.h>
+#include <esp_task_wdt.h>
+
+// ===================== WIFI AP =====================
+const char* AP_SSID = "SABITA_ROBOT";
+const char* AP_PASS = "12345678";
+
+// ===================== MOTOR BTS7960 =====================
+#define MOT_R_RPWM  25
+#define MOT_R_LPWM  26
+#define MOT_L_RPWM  27
+#define MOT_L_LPWM  14
+
+#define PWM_FREQ    5000
+#define PWM_RES     8
+
+#define CH_R_RPWM   0
+#define CH_R_LPWM   1
+#define CH_L_RPWM   2
+#define CH_L_LPWM   3
+
+int MOTOR_SPEED = 51;
+
+// ===================== LINE FOLLOWER (ADC Analog) =====================
+#define PIN_S1   33   // ADC1_CH5
+#define PIN_S2   32   // ADC1_CH4
+#define PIN_S3   35   // ADC1_CH7
+#define PIN_S4   34   // ADC1_CH6
+#define PIN_S5   36   // ADC1_CH0
+#define PIN_CLP  39   // Input digital (CLP tetap digital)
+
+// >>>>>> THRESHOLD & KALIBRASI <<<<<<
+#define CALIB_DURATION_MS  5000  // 5 detik kalibrasi saat boot
+#define ADC_OVERSAMPLE     8     // oversampling per baca untuk kurangi noise
+
+// Sensor aktif: S1,S2,S3,S4,S6 (S5/GPIO36 dinonaktifkan - hardware bug)
+// Index:          0   1   2   3   4
+int sensorPin[5] = {PIN_S1, PIN_S2, PIN_S3, PIN_S4, PIN_CLP}; // PIN_CLP=GPIO39=S6
+int whiteVal[5]  = {4095, 4095, 4095, 4095, 4095}; // nilai ADC di atas putih (update saat kalib)
+int blackVal[5]  = {0, 0, 0, 0, 0};                // nilai ADC di atas hitam (update saat kalib)
+int threshold[5] = {2048, 2048, 2048, 2048, 2048}; // midpoint, diupdate saat kalibrasi
+bool calibDone   = false;
+int sDigital[5]  = {0, 0, 0, 0, 0}; // [0]=S1,[1]=S2,[2]=S3,[3]=S4,[4]=S6
+
+// ===================== GM67 QR (UART2) =====================
+#define GM67_TX  16
+#define GM67_RX  17
+HardwareSerial GM67Serial(2);
+
+// ===================== DFPLAYER (UART1) =====================
+#define DFP_RX  4
+#define DFP_TX  5
+HardwareSerial DFPSerial(1);
+DFRobotDFPlayerMini dfPlayer;
+bool dfPlayerReady = false;
+int currentVolume = 18;
+#define VOLUME_MAX 18
+
+// ===================== SERVER =====================
+WebServer server(80);
+WebSocketsServer webSocket(81);
+
+// ===================== TIMING =====================
+unsigned long lastSensorUpdate = 0;
+const unsigned long SENSOR_INTERVAL = 200;
+
+// ============================================================
+//  MODUL ACO
+// ============================================================
+#define N_NODE 6
+#define NO_EDGE 999.0
+
+const char NODE_NAMES[N_NODE] = {'A', 'B', 'C', 'D', 'E', 'F'};
+
+float distMatrix[N_NODE][N_NODE] = {
+  { 0.00,  1.07,  NO_EDGE, NO_EDGE, 1.51,  1.21 },
+  { 1.07,  0.00,  1.80,  NO_EDGE, NO_EDGE, 1.16 },
+  { NO_EDGE, 1.80,  0.00,  1.68,  NO_EDGE, 1.41 },
+  { NO_EDGE, NO_EDGE, 1.68,  0.00,  1.49,  1.07 },
+  { 1.51,  NO_EDGE, NO_EDGE, 1.49,  0.00,  1.54 },
+  { 1.21,  1.16,  1.41,  1.07,  1.54,  0.00 }
+};
+
+const float ALPHA = 1.0;
+const float BETA  = 2.0;
+const float RHO   = 0.3;
+const int   N_ANTS = 6;
+const int   N_ITER = 100;
+const float TAU0  = 1.0;
+
+float pheromone[N_NODE][N_NODE];
+int   bestRoute[N_NODE + 1];
+float bestLength = 999999.0;
+
+int nodeIndexFromChar(char c) {
+  c = toupper(c);
+  for (int i = 0; i < N_NODE; i++) {
+    if (NODE_NAMES[i] == c) return i;
+  }
+  return -1;
+}
+
+char nodeCharFromIndex(int idx) {
+  if (idx < 0 || idx >= N_NODE) return '?';
+  return NODE_NAMES[idx];
+}
+
+void initPheromone() {
+  for (int i = 0; i < N_NODE; i++)
+    for (int j = 0; j < N_NODE; j++)
+      pheromone[i][j] = TAU0;
+}
+
+bool constructRoute(int startNode, int route[]) {
+  bool visited[N_NODE];
+  for (int i = 0; i < N_NODE; i++) visited[i] = false;
+
+  route[0] = startNode;
+  visited[startNode] = true;
+  int current = startNode;
+
+  int step = 1;
+  int maxTries = 100;
+  int tries = 0;
+
+  while (step < N_NODE && tries < maxTries) {
+    tries++;
+    float scores[N_NODE];
+    float totalScore = 0.0;
+    bool hasCandidate = false;
+
+    for (int j = 0; j < N_NODE; j++) {
+      if (!visited[j] && distMatrix[current][j] < NO_EDGE) {
+        float tau = pow(pheromone[current][j], ALPHA);
+        float eta = pow(1.0 / distMatrix[current][j], BETA);
+        scores[j] = tau * eta;
+        totalScore += scores[j];
+        hasCandidate = true;
+      } else {
+        scores[j] = 0.0;
+      }
+    }
+
+    if (!hasCandidate) {
+      float bestFallbackDist = NO_EDGE;
+      int bestFallback = -1;
+      for (int j = 0; j < N_NODE; j++) {
+        if (distMatrix[current][j] < NO_EDGE && j != current) {
+          for (int k = 0; k < N_NODE; k++) {
+            if (!visited[k] && distMatrix[j][k] < NO_EDGE) {
+              if (distMatrix[current][j] < bestFallbackDist) {
+                bestFallbackDist = distMatrix[current][j];
+                bestFallback = j;
+              }
+              break;
+            }
+          }
+        }
+      }
+      if (bestFallback == -1) return false;
+      current = bestFallback;
+      continue;
+    }
+
+    float r = ((float)random(0, 10000) / 10000.0) * totalScore;
+    float cumulative = 0.0;
+    int chosen = -1;
+    for (int j = 0; j < N_NODE; j++) {
+      if (scores[j] > 0) {
+        cumulative += scores[j];
+        if (cumulative >= r) { chosen = j; break; }
+      }
+    }
+    if (chosen == -1) {
+      for (int j = 0; j < N_NODE; j++) {
+        if (scores[j] > 0) { chosen = j; break; }
+      }
+    }
+
+    route[step] = chosen;
+    visited[chosen] = true;
+    current = chosen;
+    step++;
+  }
+
+  return (step >= N_NODE);
+}
+
+float routeLength(int route[]) {
+  float total = 0.0;
+  for (int i = 0; i < N_NODE - 1; i++) {
+    total += distMatrix[route[i]][route[i + 1]];
+  }
+  total += distMatrix[route[N_NODE - 1]][route[0]];
+  return total;
+}
+
+void updatePheromoneACO(int allRoutes[][N_NODE], float allLengths[], int nRoutes) {
+  for (int i = 0; i < N_NODE; i++) {
+    for (int j = 0; j < N_NODE; j++) {
+      pheromone[i][j] *= (1.0 - RHO);
+      if (pheromone[i][j] < 0.0001) pheromone[i][j] = 0.0001;
+    }
+  }
+  for (int k = 0; k < nRoutes; k++) {
+    float deposit = 1.0 / allLengths[k];
+    for (int i = 0; i < N_NODE - 1; i++) {
+      int a = allRoutes[k][i];
+      int b = allRoutes[k][i + 1];
+      pheromone[a][b] += deposit;
+      pheromone[b][a] += deposit;
+    }
+    int a = allRoutes[k][N_NODE - 1];
+    int b = allRoutes[k][0];
+    pheromone[a][b] += deposit;
+    pheromone[b][a] += deposit;
+  }
+}
+
+bool runACO(int startNode) {
+  initPheromone();
+  bestLength = 999999.0;
+  bool foundAny = false;
+
+  int allRoutes[N_ANTS][N_NODE];
+  float allLengths[N_ANTS];
+
+  for (int iter = 0; iter < N_ITER; iter++) {
+    int validCount = 0;
+    for (int ant = 0; ant < N_ANTS; ant++) {
+      int route[N_NODE];
+      bool ok = constructRoute(startNode, route);
+      if (ok) {
+        float len = routeLength(route);
+        allLengths[validCount] = len;
+        for (int i = 0; i < N_NODE; i++) allRoutes[validCount][i] = route[i];
+        validCount++;
+        foundAny = true;
+        if (len < bestLength) {
+          bestLength = len;
+          for (int i = 0; i < N_NODE; i++) bestRoute[i] = route[i];
+          bestRoute[N_NODE] = startNode;
+        }
+      }
+    }
+    if (validCount > 0) updatePheromoneACO(allRoutes, allLengths, validCount);
+    yield();
+  }
+  return foundAny;
+}
+
+// ============================================================
+//  STATE MESIN ROBOT (FSM)
+// ============================================================
+enum RobotState {
+  STATE_WAIT_START,     // tunggu scan QR pertama (auto-detect start node)
+  STATE_READY,          // start node terdeteksi, tunggu tombol MULAI dari web
+  STATE_COMPUTING_ACO,  // sedang hitung ACO
+  STATE_MOVING,         // line-follow menuju node berikutnya
+  STATE_ARRIVED,        // baru scan QR, proses audio
+  STATE_FINISHED        // semua node selesai, kembali ke start
+};
+
+RobotState robotState = STATE_WAIT_START;
+int startNodeIdx = -1;
+int routeProgress = 0;        // index ke berapa di bestRoute[] yang sedang dituju
+bool visitedNode[N_NODE];
+int nodesVisitedCount = 0;
+unsigned long arrivedTimestamp = 0;
+const unsigned long AUDIO_PLAY_DURATION = 8000; // ms, waktu jeda berhenti+audio sebelum lanjut jalan
+
+// ===================== INFO KARYA =====================
+const char* namaKarya[] = {
+  "Mona Lisa", "The Scream", "The Kiss", "Starry Night", "Sunflowers", "Guernica"
+};
+const char* deskKarya[] = {
+  "Karya Leonardo da Vinci, 1503. Museum Louvre, Paris.",
+  "Karya Edvard Munch, 1893. Galeri Nasional, Oslo.",
+  "Karya Gustav Klimt, 1907. Museum Belvedere, Wina.",
+  "Karya Vincent van Gogh, 1889. Museum MoMA, New York.",
+  "Karya Vincent van Gogh, 1888. National Gallery, London.",
+  "Karya Pablo Picasso, 1937. Museo Reina Sofia, Madrid."
+};
+
+// ===================== MOTOR =====================
+// Konvensi BTS7960 (hasil kalibrasi lapangan): RPWM=0 & LPWM=speed -> roda MAJU
+//                                               RPWM=speed & LPWM=0 -> roda MUNDUR
+void wheelR(bool forward, int speed) {
+  if (forward) { ledcWrite(CH_R_RPWM, 0);     ledcWrite(CH_R_LPWM, speed); }
+  else         { ledcWrite(CH_R_RPWM, speed); ledcWrite(CH_R_LPWM, 0);     }
+}
+void wheelL(bool forward, int speed) {
+  if (forward) { ledcWrite(CH_L_RPWM, 0);     ledcWrite(CH_L_LPWM, speed); }
+  else         { ledcWrite(CH_L_RPWM, speed); ledcWrite(CH_L_LPWM, 0);     }
+}
+void motorStop() {
+  ledcWrite(CH_R_RPWM, 0); ledcWrite(CH_R_LPWM, 0);
+  ledcWrite(CH_L_RPWM, 0); ledcWrite(CH_L_LPWM, 0);
+}
+void motorMaju() {
+  wheelR(true, MOTOR_SPEED);
+  wheelL(true, MOTOR_SPEED);
+}
+void motorMundur() {
+  wheelR(false, MOTOR_SPEED);
+  wheelL(false, MOTOR_SPEED);
+}
+void motorKanan() {
+  wheelR(false, MOTOR_SPEED); // roda kanan mundur
+  wheelL(true, MOTOR_SPEED);  // roda kiri maju -> pivot ke kanan
+}
+void motorKiri() {
+  wheelR(true, MOTOR_SPEED);  // roda kanan maju
+  wheelL(false, MOTOR_SPEED); // roda kiri mundur -> pivot ke kiri
+}
+
+// ===================== BACA ADC DENGAN OVERSAMPLING =====================
+int readADCAvg(int pin) {
+  long sum = 0;
+  for (int i = 0; i < ADC_OVERSAMPLE; i++) {
+    sum += analogRead(pin);
+    delayMicroseconds(100);
+  }
+  return (int)(sum / ADC_OVERSAMPLE);
+}
+
+// ===================== BACA SEMUA SENSOR & KONVERSI KE DIGITAL =====================
+// Hitam (garis) = ADC rendah = 1 (HIGH), Putih (background) = ADC tinggi = 0 (LOW)
+void readSensors() {
+  for (int i = 0; i < 5; i++) {
+    int val = readADCAvg(sensorPin[i]);
+    sDigital[i] = (val < threshold[i]) ? 1 : 0;
+  }
+}
+
+// ===================== KALIBRASI OTOMATIS SAAT BOOT =====================
+// Fase 1 (2.5 detik pertama): taruh robot di atas PUTIH
+// Fase 2 (2.5 detik berikutnya): taruh robot di atas HITAM
+void runCalibration() {
+  Serial.println("\n=== KALIBRASI SENSOR ===");
+  Serial.println("Fase 1: Taruh robot di atas GARIS PUTIH (2.5 detik)...");
+  String calibWhiteMsg = "{\"type\":\"state\",\"state\":\"CALIBRATING_WHITE\"}";
+  webSocket.broadcastTXT(calibWhiteMsg);
+
+  // Fase 1: kalibrasi putih
+  int samplesW[5] = {0, 0, 0, 0, 0};
+  int countW = 0;
+  unsigned long t0 = millis();
+  while (millis() - t0 < CALIB_DURATION_MS / 2) {
+    for (int i = 0; i < 5; i++) samplesW[i] += readADCAvg(sensorPin[i]);
+    countW++;
+    delay(50);
+    yield();
+  }
+  for (int i = 0; i < 5; i++) whiteVal[i] = samplesW[i] / countW;
+  Serial.print("Putih: ");
+  for (int i = 0; i < 5; i++) { Serial.print(whiteVal[i]); Serial.print(" "); }
+  Serial.println();
+
+  // Fase 2: kalibrasi hitam
+  Serial.println("Fase 2: Taruh robot di atas GARIS HITAM (2.5 detik)...");
+  String calibBlackMsg = "{\"type\":\"state\",\"state\":\"CALIBRATING_BLACK\"}";
+  webSocket.broadcastTXT(calibBlackMsg);
+
+  int samplesB[5] = {0, 0, 0, 0, 0};
+  int countB = 0;
+  unsigned long t1 = millis();
+  while (millis() - t1 < CALIB_DURATION_MS / 2) {
+    for (int i = 0; i < 5; i++) samplesB[i] += readADCAvg(sensorPin[i]);
+    countB++;
+    delay(50);
+    yield();
+  }
+  for (int i = 0; i < 5; i++) blackVal[i] = samplesB[i] / countB;
+  Serial.print("Hitam: ");
+  for (int i = 0; i < 5; i++) { Serial.print(blackVal[i]); Serial.print(" "); }
+  Serial.println();
+
+  // Hitung threshold = midpoint putih dan hitam
+  Serial.print("Threshold: ");
+  for (int i = 0; i < 5; i++) {
+    threshold[i] = (whiteVal[i] + blackVal[i]) / 2;
+    Serial.print(threshold[i]); Serial.print(" ");
+  }
+  Serial.println();
+
+  calibDone = true;
+  Serial.println("=== KALIBRASI SELESAI ===");
+  String calibDoneMsg = "{\"type\":\"state\",\"state\":\"WAIT_START\"}";
+  webSocket.broadcastTXT(calibDoneMsg);
+}
+
+/*
+ * STRATEGI LINE-FOLLOW (relatif badan robot, TANPA orientasi global):
+ *
+ * Mode NORMAL (default, dipakai saat belum 5 node luar selesai):
+ *   - Prioritas LURUS dulu jika S3 aktif & tidak ada percabangan besar
+ *   - Koreksi ringan kiri/kanan untuk tetap di atas garis
+ *   - Jika ada PERSIMPANGAN (banyak sensor aktif sekaligus, indikasi cabang),
+ *     robot tetap pilih jalur yang paling LURUS/MELENGKUNG (mengikuti
+ *     kontur luar pentagon), BUKAN cabang tajam ke dalam (menuju F).
+ *     Asumsi: cabang ke F secara fisik lebih tajam/berbeda sudut
+ *     dibanding kelengkungan pentagon luar.
+ *
+ * Mode SEEK_CENTER (aktif setelah 5 node luar selesai dikunjungi):
+ *   - Robot PRIORITASKAN BELOK (ambil cabang manapun yang tersedia,
+ *     bukan lurus) untuk mencari jalur masuk ke F.
+ *   - Strategi: begitu ada indikasi persimpangan, ambil belok
+ *     (default ke kanan, bisa ditukar ke kiri jika hasil test lapangan
+ *     menunjukkan F lebih sering di sisi kiri robot).
+ */
+
+bool seekCenterMode = false; // diaktifkan dari FSM setelah 5 node luar selesai
+bool forceFirstTurnRight = false; // aktif sekali saat start dari F, untuk ambil 1 dari 5 cabang
+
+void lineFollowStep() {
+  // S1=kiri jauh, S2=kiri tengah, S3=tengah, S4=kanan tengah, S6=kanan jauh
+  int s1 = sDigital[0]; // GPIO33
+  int s2 = sDigital[1]; // GPIO32
+  int s3 = sDigital[2]; // GPIO35
+  int s4 = sDigital[3]; // GPIO34
+  int s6 = sDigital[4]; // GPIO39 (S6, bukan S5)
+
+  bool isJunction = (s1 + s2 + s3 + s4 + s6) >= 3;
+
+  if (forceFirstTurnRight) {
+    if (isJunction) {
+      motorKanan();
+      return;
+    } else {
+      forceFirstTurnRight = false;
+    }
+  }
+
+  if (seekCenterMode && isJunction) {
+    motorKanan();
+    return;
+  }
+
+  // Mode normal: ikuti garis, prioritas LURUS
+  if (s3 == 1 && s2 == 0 && s4 == 0) {
+    // Garis tepat tengah -> lurus
+    motorMaju();
+  } else if (s2 == 1 && s3 == 1 && s4 == 0) {
+    // Garis sedikit kiri -> koreksi kanan ringan
+    wheelR(true, MOTOR_SPEED / 2);
+    wheelL(true, MOTOR_SPEED);
+  } else if (s3 == 1 && s4 == 1 && s2 == 0) {
+    // Garis sedikit kanan -> koreksi kiri ringan
+    wheelR(true, MOTOR_SPEED);
+    wheelL(true, MOTOR_SPEED / 2);
+  } else if (s2 == 1 && s1 == 0 && s3 == 0) {
+    // Garis agak kiri
+    wheelR(true, MOTOR_SPEED / 3);
+    wheelL(true, MOTOR_SPEED);
+  } else if (s4 == 1 && s6 == 0 && s3 == 0) {
+    // Garis agak kanan
+    wheelR(true, MOTOR_SPEED);
+    wheelL(true, MOTOR_SPEED / 3);
+  } else if (s1 == 1) {
+    // Garis jauh kiri -> belok kiri tajam
+    motorKiri();
+  } else if (s6 == 1) {
+    // Garis jauh kanan -> belok kanan tajam
+    motorKanan();
+  } else if (s3 == 1 && s2 == 1 && s4 == 1) {
+    // Persimpangan lebar -> tetap lurus
+    motorMaju();
+  } else {
+    // Tidak ada garis -> tetap maju pelan
+    motorMaju();
+  }
+}
+
+// ===================== DFPLAYER =====================
+void playAudioForNode(int nodeIdx) {
+  if (!dfPlayerReady) return;
+  if (nodeIdx < 0 || nodeIdx >= N_NODE) return;
+  int fileNum = nodeIdx + 1; // A=1, B=2, ... F=6
+  dfPlayer.play(fileNum);
+  Serial.println("Play audio: " + String(namaKarya[nodeIdx]) + " (Node " + String(NODE_NAMES[nodeIdx]) + ")");
+
+  String json = "{\"type\":\"dfp\",\"status\":\"playing\",\"file\":" + String(fileNum) +
+                ",\"name\":\"" + String(namaKarya[nodeIdx]) +
+                "\",\"node\":\"Node " + String(NODE_NAMES[nodeIdx]) +
+                "\",\"desc\":\"" + String(deskKarya[nodeIdx]) + "\"}";
+  webSocket.broadcastTXT(json);
+}
+
+void stopAudio() {
+  if (dfPlayerReady) {
+    dfPlayer.stop();
+    String stopMsg = "{\"type\":\"dfp\",\"status\":\"stopped\"}";
+    webSocket.broadcastTXT(stopMsg);
+  }
+}
+
+// ===================== QR PARSING =====================
+// Extract huruf node dari "Node X, Art NAMA, Audio XXX"
+int getNodeFromQR(String qrData) {
+  qrData.trim();
+  String lower = qrData;
+  lower.toLowerCase();
+  int idx = lower.indexOf("node ");
+  if (idx >= 0) {
+    int charPos = idx + 5;
+    if (charPos < (int)qrData.length()) {
+      char c = toupper(qrData.charAt(charPos));
+      return nodeIndexFromChar(c);
+    }
+  }
+  return -1;
+}
+
+// ===================== KIRIM STATUS RUTE KE WEB =====================
+void broadcastRouteStatus() {
+  String routeStr = "";
+  for (int i = 0; i <= N_NODE; i++) {
+    routeStr += String(nodeCharFromIndex(bestRoute[i]));
+    if (i < N_NODE) routeStr += "-";
+  }
+  String json = "{\"type\":\"route\",\"route\":\"" + routeStr +
+                "\",\"length\":" + String(bestLength, 2) +
+                ",\"progress\":" + String(nodesVisitedCount) +
+                ",\"total\":" + String(N_NODE) + "}";
+  webSocket.broadcastTXT(json);
+}
+
+void broadcastState(String stateName) {
+  String json = "{\"type\":\"state\",\"state\":\"" + stateName + "\"}";
+  webSocket.broadcastTXT(json);
+}
+
+// ===================== RESET MISI (untuk testing ulang) =====================
+void resetMission() {
+  robotState = STATE_WAIT_START;
+  startNodeIdx = -1;
+  routeProgress = 0;
+  nodesVisitedCount = 0;
+  seekCenterMode = false;
+  forceFirstTurnRight = false;
+  bestLength = 999999.0;
+  for (int i = 0; i < N_NODE; i++) visitedNode[i] = false;
+  motorStop();
+  Serial.println("Misi direset. Taruh robot di node manapun dan scan QR...");
+  broadcastState("WAIT_START");
+  String resetMsg = "{\"type\":\"startnode\",\"node\":\"-\"}";
+  webSocket.broadcastTXT(resetMsg);
+}
+
+// ===================== WEBSOCKET EVENT =====================
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
+  if (type == WStype_DISCONNECTED) {
+    // Jangan auto-stop motor di sini supaya misi otomatis tidak terganggu disconnect WS
+  }
+  else if (type == WStype_CONNECTED) {
+    String json = "{\"type\":\"dfp\",\"status\":\"" + String(dfPlayerReady ? "ready" : "error") +
+                  "\",\"volume\":" + String(currentVolume) + "}";
+    webSocket.sendTXT(num, json);
+  }
+  else if (type == WStype_TEXT) {
+    String msg = String((char*)payload);
+
+    // Manual override (mode testing manual, hanya aktif kalau robot WAIT_START)
+    if (robotState == STATE_WAIT_START) {
+      if      (msg == "MAJU")   motorMaju();
+      else if (msg == "MUNDUR") motorMundur();
+      else if (msg == "KANAN")  motorKanan();
+      else if (msg == "KIRI")   motorKiri();
+      else if (msg == "STOP")   motorStop();
+    }
+
+    if (msg.startsWith("SPEED:")) {
+      MOTOR_SPEED = constrain(msg.substring(6).toInt(), 0, 255);
+    }
+    else if (msg.startsWith("PLAY:")) {
+      int nodeIdx = msg.substring(5).toInt() - 1;
+      playAudioForNode(nodeIdx);
+    }
+    else if (msg == "AUDIO_STOP") {
+      stopAudio();
+    }
+    else if (msg.startsWith("VOL:")) {
+      currentVolume = constrain(msg.substring(4).toInt(), 0, VOLUME_MAX);
+      if (dfPlayerReady) dfPlayer.volume(currentVolume);
+    }
+    else if (msg == "RESET_MISSION") {
+      resetMission();
+    }
+    else if (msg == "START_MISSION") {
+      // Tombol MULAI dari web - hanya aktif saat STATE_READY
+      if (robotState == STATE_READY) {
+        Serial.println("Tombol MULAI ditekan. Memulai ACO...");
+        robotState = STATE_COMPUTING_ACO;
+        broadcastState("COMPUTING");
+      } else {
+        Serial.println("START_MISSION diabaikan, state bukan READY");
+      }
+    }
+    else if (msg == "RECALIB") {
+      // Kalibrasi ulang sensor - hanya bisa saat WAIT_START atau READY
+      if (robotState == STATE_WAIT_START || robotState == STATE_READY) {
+        Serial.println("Memulai kalibrasi ulang dari web...");
+        runCalibration();
+      } else {
+        Serial.println("Kalibrasi hanya bisa dilakukan saat WAIT_START");
+        String notReadyMsg = "{\"type\":\"state\",\"state\":\"WAIT_START\"}";
+        webSocket.broadcastTXT(notReadyMsg);
+      }
+    }
+  }
+}
+
+// ===================== HTML (ringkas, fokus monitoring misi) =====================
+const char HTML_PAGE[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>SABITA v6</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',sans-serif;background:#0f1117;color:#e0e0e0}
+.hdr{background:#1a1d2e;padding:14px;text-align:center;border-bottom:2px solid #3b82f6}
+.hdr h1{font-size:18px;color:#3b82f6;letter-spacing:2px}
+.hdr .st{font-size:12px;margin-top:4px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:#ef4444}
+.dot.on{background:#22c55e}
+.ct{padding:10px;max-width:480px;margin:0 auto}
+.cd{background:#1a1d2e;border-radius:10px;padding:14px;margin-bottom:10px;border:1px solid #2a2d3e}
+.ct-t{font-size:13px;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid #2a2d3e}
+
+.state-display{text-align:center;font-size:20px;font-weight:bold;padding:16px;border-radius:8px;background:#252940;color:#3b82f6;margin-bottom:10px}
+.state-display.wait{color:#94a3b8}
+.state-display.moving{color:#22c55e}
+.state-display.arrived{color:#f59e0b}
+.state-display.finished{color:#a855f7}
+
+.route-display{text-align:center;font-size:16px;font-weight:bold;padding:10px;border-radius:8px;background:#252940;color:#22c55e;margin-bottom:8px;word-break:break-all}
+.progress-bar{background:#2a2d3e;border-radius:6px;height:10px;overflow:hidden;margin-bottom:8px}
+.progress-fill{background:#22c55e;height:100%;transition:width .3s}
+.progress-text{text-align:center;font-size:12px;color:#94a3b8}
+
+.btn-reset{width:100%;padding:12px;border:none;border-radius:8px;background:#dc2626;color:#fff;font-weight:bold;font-size:14px;cursor:pointer;margin-top:10px}
+.btn-reset:active{filter:brightness(1.2)}
+
+.ds{text-align:center;padding:6px;border-radius:6px;margin-bottom:8px;font-size:12px;font-weight:bold}
+.ds.rdy{background:#14532d;color:#22c55e}
+.ds.err{background:#451a1a;color:#ef4444}
+.ds.pl{background:#1e3a5f;color:#3b82f6}
+.dfp-node{text-align:center;font-size:13px;color:#f59e0b;margin-bottom:6px;font-weight:bold;min-height:16px}
+.dfp-info{text-align:center;font-size:11px;color:#94a3b8;font-style:italic;min-height:18px;margin-bottom:8px}
+
+.qr-display{text-align:center;font-size:16px;font-weight:bold;padding:14px;border-radius:8px;background:#252940;color:#22c55e;min-height:50px;word-break:break-all}
+.qr-display.empty{color:#4a4d5e}
+.qr-history{margin-top:6px;font-size:11px;color:#64748b;max-height:80px;overflow-y:auto}
+.qr-history div{padding:3px 0;border-bottom:1px solid #1f2233}
+
+.sf{display:flex;justify-content:center;gap:6px;margin-bottom:10px}
+.sb{width:40px;height:40px;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-weight:bold;background:#2a2d3e;border:2px solid #3a3d4e}
+.sb.hi{background:#22c55e;border-color:#16a34a;color:#000}
+.sb .l{font-size:9px;opacity:.7}
+.sb .v{font-size:12px}
+.ad{text-align:center;font-size:14px;font-weight:bold;padding:8px;border-radius:8px;background:#252940;color:#3b82f6}
+</style>
+</head>
+<body>
+<div class="hdr">
+<h1>SABITA ROBOT v6</h1>
+<div class="st"><span class="dot" id="dot"></span><span id="stx">Menghubungkan...</span></div>
+</div>
+<div class="ct">
+
+<div class="cd">
+<div class="ct-t">Status Misi</div>
+<div class="state-display wait" id="stateDisp">MENUNGGU SCAN QR START</div>
+<div style="text-align:center;padding:8px;margin-bottom:8px;background:#252940;border-radius:8px;font-size:14px">
+  Start Node: <span id="startNodeDisp" style="color:#f59e0b;font-weight:bold;font-size:18px">-</span>
+</div>
+<button id="btnMulai" onclick="W('START_MISSION')"
+  style="width:100%;padding:14px;border:none;border-radius:8px;background:#22c55e;color:#fff;font-weight:bold;font-size:16px;cursor:pointer;margin-bottom:8px;opacity:0.4;pointer-events:none">
+  ▶ MULAI MISI
+</button>
+<div class="route-display" id="routeDisp">Rute belum dihitung</div>
+<div class="progress-bar"><div class="progress-fill" id="progFill" style="width:0%"></div></div>
+<div class="progress-text" id="progText">0 / 6 node dikunjungi</div>
+<button class="btn-reset" onclick="W('RESET_MISSION')">RESET MISI</button>
+</div>
+
+<div class="cd">
+<div class="ct-t">Audio DFPlayer</div>
+<div class="ds err" id="dfs">DFPlayer: Menunggu...</div>
+<div class="dfp-node" id="dfpNode"></div>
+<div class="dfp-info" id="dfpInfo"></div>
+</div>
+
+<div class="cd">
+<div class="ct-t">QR Code (GM67)</div>
+<div class="qr-display empty" id="qrd">Menunggu scan...</div>
+<div class="qr-history" id="qrh"></div>
+</div>
+
+<div class="cd">
+<div class="ct-t">Line Follower (ADC) — S1,S2,S3,S4,S6</div>
+<div class="sf">
+<div class="sb" id="b1"><div class="l">S1</div><div class="v" id="v1">0</div></div>
+<div class="sb" id="b2"><div class="l">S2</div><div class="v" id="v2">0</div></div>
+<div class="sb" id="b3"><div class="l">S3</div><div class="v" id="v3">0</div></div>
+<div class="sb" id="b4"><div class="l">S4</div><div class="v" id="v4">0</div></div>
+<div class="sb" id="b6"><div class="l">S6</div><div class="v" id="v6">0</div></div>
+</div>
+<div class="ad" id="arah">-</div>
+<div style="margin-top:8px;display:grid;grid-template-columns:repeat(5,1fr);gap:4px;text-align:center">
+<div style="font-size:10px;color:#94a3b8">S1 raw<br><span id="r1" style="color:#f59e0b">-</span></div>
+<div style="font-size:10px;color:#94a3b8">S2 raw<br><span id="r2" style="color:#f59e0b">-</span></div>
+<div style="font-size:10px;color:#94a3b8">S3 raw<br><span id="r3" style="color:#f59e0b">-</span></div>
+<div style="font-size:10px;color:#94a3b8">S4 raw<br><span id="r4" style="color:#f59e0b">-</span></div>
+<div style="font-size:10px;color:#94a3b8">S6 raw<br><span id="r6" style="color:#f59e0b">-</span></div>
+</div>
+<div style="margin-top:6px;text-align:center;font-size:11px;color:#64748b">Threshold S3: <span id="thr">-</span></div>
+<button onclick="W('RECALIB')" style="margin-top:8px;width:100%;padding:10px;border:none;border-radius:8px;background:#7c3aed;color:#fff;font-weight:bold;font-size:12px;cursor:pointer">
+KALIBRASI ULANG SENSOR
+</button>
+</div>
+
+</div>
+<script>
+var ws,ri;
+function W(m){if(ws&&ws.readyState===1)ws.send(m)}
+function C(){
+ws=new WebSocket('ws://'+location.hostname+':81/');
+ws.onopen=function(){
+document.getElementById('dot').classList.add('on');
+document.getElementById('stx').textContent='Terhubung';
+clearInterval(ri)};
+ws.onclose=function(){
+document.getElementById('dot').classList.remove('on');
+document.getElementById('stx').textContent='Terputus';
+ri=setInterval(C,2000)};
+ws.onmessage=function(e){
+try{var d=JSON.parse(e.data);
+
+if(d.type==='sensor'){
+US('b1','v1',d.s1);US('b2','v2',d.s2);US('b3','v3',d.s3);
+US('b4','v4',d.s4);US('b6','v6',d.s6);
+document.getElementById('arah').textContent=d.arah;
+if(d.r1!==undefined){
+document.getElementById('r1').textContent=d.r1;
+document.getElementById('r2').textContent=d.r2;
+document.getElementById('r3').textContent=d.r3;
+document.getElementById('r4').textContent=d.r4;
+document.getElementById('r6').textContent=d.r6;
+document.getElementById('thr').textContent=d.thr}}
+
+if(d.type==='qr'){
+var q=document.getElementById('qrd');
+q.textContent=d.data;q.classList.remove('empty');
+var h=document.getElementById('qrh');
+var v=document.createElement('div');
+v.textContent=new Date().toLocaleTimeString()+' > '+d.data;
+h.insertBefore(v,h.firstChild);
+if(h.children.length>15)h.removeChild(h.lastChild)}
+
+if(d.type==='dfp'){
+var f=document.getElementById('dfs');
+var nd=document.getElementById('dfpNode');
+var inf=document.getElementById('dfpInfo');
+f.className='ds';
+if(d.status==='ready'){f.classList.add('rdy');f.textContent='DFPlayer: Siap';nd.textContent='';inf.textContent=''}
+else if(d.status==='playing'){f.classList.add('pl');f.textContent='Playing: '+d.name;nd.textContent=d.node||'';inf.textContent=d.desc||''}
+else if(d.status==='stopped'){f.classList.add('rdy');f.textContent='DFPlayer: Stop';nd.textContent='';inf.textContent=''}
+else{f.classList.add('err');f.textContent='DFPlayer: Error'}}
+
+if(d.type==='route'){
+document.getElementById('routeDisp').textContent='Rute: '+d.route+' ('+d.length+' m)';
+var pct=(d.progress/d.total)*100;
+document.getElementById('progFill').style.width=pct+'%';
+document.getElementById('progText').textContent=d.progress+' / '+d.total+' node dikunjungi'}
+
+if(d.type==='state'){
+var sd=document.getElementById('stateDisp');
+var btn=document.getElementById('btnMulai');
+sd.className='state-display';
+if(d.state==='WAIT_START'){
+  sd.classList.add('wait');sd.textContent='SCAN QR NODE MANAPUN UNTUK MULAI';
+  btn.style.opacity='0.4';btn.style.pointerEvents='none'}
+else if(d.state==='READY'){
+  sd.classList.add('arrived');sd.textContent='SIAP - TEKAN MULAI UNTUK JALANKAN';
+  btn.style.opacity='1';btn.style.pointerEvents='auto'}
+else if(d.state==='CALIBRATING_WHITE'){
+  sd.classList.add('wait');sd.textContent='KALIBRASI: TARUH DI PUTIH...';
+  btn.style.opacity='0.4';btn.style.pointerEvents='none'}
+else if(d.state==='CALIBRATING_BLACK'){
+  sd.classList.add('arrived');sd.textContent='KALIBRASI: TARUH DI HITAM...';
+  btn.style.opacity='0.4';btn.style.pointerEvents='none'}
+else if(d.state==='COMPUTING'){
+  sd.classList.add('wait');sd.textContent='MENGHITUNG RUTE ACO...';
+  btn.style.opacity='0.4';btn.style.pointerEvents='none'}
+else if(d.state==='MOVING'){
+  sd.classList.add('moving');sd.textContent='ROBOT BERGERAK';
+  btn.style.opacity='0.4';btn.style.pointerEvents='none'}
+else if(d.state==='ARRIVED'){
+  sd.classList.add('arrived');sd.textContent='SAMPAI DI NODE - MEMUTAR AUDIO';
+  btn.style.opacity='0.4';btn.style.pointerEvents='none'}
+else if(d.state==='FINISHED'){
+  sd.classList.add('finished');sd.textContent='MISI SELESAI';
+  btn.style.opacity='0.4';btn.style.pointerEvents='none'}}
+
+if(d.type==='startnode'){
+  document.getElementById('startNodeDisp').textContent=
+    d.node==='-'?'-':'Node '+d.node}
+
+}catch(x){}}
+}
+function US(bi,vi,val){
+document.getElementById(vi).textContent=val;
+document.getElementById(bi).classList.toggle('hi',val===1)}
+C();
+</script>
+</body>
+</html>
+)rawliteral";
+
+// ===================== SETUP =====================
+void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  esp_task_wdt_init(30, false);
+
+  Serial.begin(115200);
+  Serial.println("\n=== SABITA Robot v6 - FULL INTEGRATION ===");
+
+  randomSeed(analogRead(0)); // seed random untuk ACO
+
+  // --- Motor PWM ---
+  ledcSetup(CH_R_RPWM, PWM_FREQ, PWM_RES);
+  ledcSetup(CH_R_LPWM, PWM_FREQ, PWM_RES);
+  ledcSetup(CH_L_RPWM, PWM_FREQ, PWM_RES);
+  ledcSetup(CH_L_LPWM, PWM_FREQ, PWM_RES);
+  ledcAttachPin(MOT_R_RPWM, CH_R_RPWM);
+  ledcAttachPin(MOT_R_LPWM, CH_R_LPWM);
+  ledcAttachPin(MOT_L_RPWM, CH_L_RPWM);
+  ledcAttachPin(MOT_L_LPWM, CH_L_LPWM);
+  motorStop();
+  Serial.println("Motor OK");
+
+  // --- Line Follower ADC ---
+  adc_power_acquire();          // fix glitch GPIO36 & GPIO39 saat WiFi aktif (+1mA)
+  analogReadResolution(12);       // 12-bit ADC (0-4095)
+  analogSetAttenuation(ADC_11db); // range 0-3.3V
+  pinMode(PIN_CLP, INPUT);
+  Serial.println("Line Follower ADC OK (12-bit, 0-3.3V)");
+
+  // --- Kalibrasi sensor (blocking, sebelum WiFi supaya tidak ganggu ADC) ---
+  Serial.println("Memulai kalibrasi sensor...");
+  // Kalibrasi sementara pakai nilai default dulu (WiFi belum up, webSocket belum jalan)
+  // Kalibrasi ulang bisa dipanggil dari web setelah WiFi up via RESET_MISSION
+  // Untuk saat ini, baca nilai awal sebagai estimasi putih
+  for (int i = 0; i < 5; i++) {
+    long sum = 0;
+    for (int j = 0; j < 20; j++) { sum += analogRead(sensorPin[i]); delay(10); }
+    whiteVal[i] = sum / 20;
+    blackVal[i] = whiteVal[i] / 4; // estimasi hitam = 25% dari putih
+    threshold[i] = (whiteVal[i] + blackVal[i]) / 2;
+  }
+  Serial.print("Threshold awal: ");
+  for (int i = 0; i < 5; i++) { Serial.print(threshold[i]); Serial.print(" "); }
+  Serial.println();
+  Serial.println("(Kalibrasi ulang: taruh di putih lalu hitam setelah terhubung ke web)");
+
+
+  // --- GM67 UART2 ---
+  GM67Serial.begin(9600, SERIAL_8N1, GM67_TX, GM67_RX);
+  Serial.println("GM67 OK");
+
+  // --- DFPlayer UART1 ---
+  DFPSerial.begin(9600, SERIAL_8N1, DFP_RX, DFP_TX);
+  Serial.println("DFPlayer init...");
+  delay(2000);
+  if (dfPlayer.begin(DFPSerial, false, true)) {
+    dfPlayerReady = true;
+    dfPlayer.volume(currentVolume);
+    Serial.println("DFPlayer OK");
+  } else {
+    dfPlayerReady = false;
+    Serial.println("DFPlayer GAGAL");
+  }
+
+  // --- WiFi AP ---
+  WiFi.softAP(AP_SSID, AP_PASS);
+  Serial.println("IP: " + WiFi.softAPIP().toString());
+
+  // --- Web Server ---
+  server.on("/", []() { server.send_P(200, "text/html", HTML_PAGE); });
+  server.begin();
+
+  // --- WebSocket ---
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
+
+  // --- Reset state awal ---
+  for (int i = 0; i < N_NODE; i++) visitedNode[i] = false;
+
+  Serial.println("\n=== READY - Menunggu scan QR start ===");
+  Serial.println("http://" + WiFi.softAPIP().toString());
+}
+
+// ===================== LOOP =====================
+void loop() {
+  server.handleClient();
+  webSocket.loop();
+
+  // --- Baca sensor ADC + konversi ke digital ---
+  readSensors(); // isi sDigital[0..4]: S1,S2,S3,S4,S6
+  int s1 = sDigital[0]; // GPIO33
+  int s2 = sDigital[1]; // GPIO32
+  int s3 = sDigital[2]; // GPIO35
+  int s4 = sDigital[3]; // GPIO34
+  int s6 = sDigital[4]; // GPIO39 (S6)
+  // Baca nilai ADC raw untuk monitoring di web
+  int rawVal[5];
+  for (int i = 0; i < 5; i++) rawVal[i] = readADCAvg(sensorPin[i]);
+
+  if (millis() - lastSensorUpdate >= SENSOR_INTERVAL) {
+    lastSensorUpdate = millis();
+
+    String arah = "TIDAK ADA GARIS";
+    if (s1==1&&s2==1&&s3==1&&s4==1&&s6==1)      arah = "PERSIMPANGAN";
+    else if (s3==1&&s2==0&&s4==0)                arah = "LURUS";
+    else if (s2==1&&s3==1&&s4==0)                arah = "BELOK KIRI";
+    else if (s3==1&&s4==1&&s2==0)                arah = "BELOK KANAN";
+    else if (s1==1)                              arah = "KIRI TAJAM";
+    else if (s6==1)                              arah = "KANAN TAJAM";
+
+    String json = "{\"type\":\"sensor\","
+      "\"s1\":" + String(s1) + ",\"s2\":" + String(s2) + ",\"s3\":" + String(s3) +
+      ",\"s4\":" + String(s4) + ",\"s6\":" + String(s6) +
+      ",\"arah\":\"" + arah +
+      "\",\"r1\":" + String(rawVal[0]) +
+      ",\"r2\":" + String(rawVal[1]) +
+      ",\"r3\":" + String(rawVal[2]) +
+      ",\"r4\":" + String(rawVal[3]) +
+      ",\"r5\":" + String(rawVal[4]) +
+      ",\"thr\":" + String(threshold[2]) + "}";
+    webSocket.broadcastTXT(json);
+  }
+
+  // --- Baca QR (selalu jalan, perilaku tergantung state) ---
+  String qrData = "";
+  if (GM67Serial.available()) {
+    unsigned long t = millis();
+    while (millis() - t < 200) {
+      if (GM67Serial.available()) {
+        char c = GM67Serial.read();
+        if (c == '\r' || c == '\n') {
+          if (qrData.length() > 0) break;
+        } else {
+          qrData += c;
+        }
+        t = millis();
+      }
+    }
+    if (qrData.length() > 0) {
+      Serial.println("QR: " + qrData);
+      String qrJson = "{\"type\":\"qr\",\"data\":\"" + qrData + "\"}";
+      webSocket.broadcastTXT(qrJson);
+    }
+  }
+
+  // ============================================================
+  //  FSM ROBOT
+  // ============================================================
+  switch (robotState) {
+
+    case STATE_WAIT_START: {
+      motorStop();
+      if (qrData.length() > 0) {
+        int nodeIdx = getNodeFromQR(qrData);
+        if (nodeIdx >= 0) {
+          startNodeIdx = nodeIdx;
+          Serial.println("Start node terdeteksi: Node " + String(NODE_NAMES[nodeIdx]));
+          Serial.println("Menunggu tombol MULAI dari web...");
+          robotState = STATE_READY;
+          broadcastState("READY");
+          // Kirim info node ke web
+          String info = "{\"type\":\"startnode\",\"node\":\"" + String(NODE_NAMES[nodeIdx]) + "\"}";
+          webSocket.broadcastTXT(info);
+        }
+      }
+      break;
+    }
+
+    case STATE_READY: {
+      motorStop(); // diam, tunggu tombol MULAI
+      // Tetap baca QR kalau ada update node
+      if (qrData.length() > 0) {
+        int nodeIdx = getNodeFromQR(qrData);
+        if (nodeIdx >= 0 && nodeIdx != startNodeIdx) {
+          // Scan QR node berbeda = update start node
+          startNodeIdx = nodeIdx;
+          Serial.println("Start node diupdate: Node " + String(NODE_NAMES[nodeIdx]));
+          String info = "{\"type\":\"startnode\",\"node\":\"" + String(NODE_NAMES[nodeIdx]) + "\"}";
+          webSocket.broadcastTXT(info);
+        }
+      }
+      break;
+    }
+
+    case STATE_COMPUTING_ACO: {
+      Serial.println("Menghitung ACO dari start=" + String(NODE_NAMES[startNodeIdx]) + "...");
+      unsigned long t0 = millis();
+      bool ok = runACO(startNodeIdx);
+      unsigned long t1 = millis();
+      Serial.println("ACO selesai dalam " + String(t1 - t0) + " ms");
+
+      if (ok) {
+        Serial.print("Rute: ");
+        for (int i = 0; i <= N_NODE; i++) {
+          Serial.print(NODE_NAMES[bestRoute[i]]);
+          if (i < N_NODE) Serial.print("-");
+        }
+        Serial.println(" | " + String(bestLength, 2) + " m");
+
+        for (int i = 0; i < N_NODE; i++) visitedNode[i] = false;
+        visitedNode[startNodeIdx] = true;
+        nodesVisitedCount = 1;
+        routeProgress = 1;
+
+        // --- Tentukan mode awal line-follow berdasar titik start ---
+        bool startIsCenter = (startNodeIdx == 5); // index 5 = 'F'
+        if (startIsCenter) {
+          forceFirstTurnRight = true;
+          seekCenterMode = false;
+          Serial.println("Start dari F (tengah): paksa belok kanan di persimpangan pertama");
+        } else {
+          forceFirstTurnRight = false;
+          seekCenterMode = false;
+          Serial.println("Start dari node luar: mode NORMAL (ikuti pentagon, cari F setelah 5 node)");
+        }
+
+        broadcastRouteStatus();
+        robotState = STATE_MOVING;
+        broadcastState("MOVING");
+      } else {
+        Serial.println("ACO GAGAL menemukan rute! Cek topologi graf.");
+        robotState = STATE_WAIT_START;
+        broadcastState("WAIT_START");
+      }
+      break;
+    }
+
+    case STATE_MOVING: {
+      lineFollowStep(); // sDigital[] sudah diisi readSensors() di atas
+
+      if (qrData.length() > 0) {
+        int nodeIdx = getNodeFromQR(qrData);
+        if (nodeIdx >= 0 && !visitedNode[nodeIdx]) {
+          motorStop();
+          Serial.println("Sampai di Node " + String(NODE_NAMES[nodeIdx]));
+          visitedNode[nodeIdx] = true;
+          nodesVisitedCount++;
+          playAudioForNode(nodeIdx);
+          arrivedTimestamp = millis();
+          broadcastRouteStatus();
+          robotState = STATE_ARRIVED;
+          broadcastState("ARRIVED");
+        }
+      }
+      break;
+    }
+
+    case STATE_ARRIVED: {
+      motorStop();
+      if (millis() - arrivedTimestamp >= AUDIO_PLAY_DURATION) {
+
+        // Hitung berapa node LUAR (bukan F) yang sudah dikunjungi
+        int outerVisitedCount = 0;
+        for (int i = 0; i < N_NODE; i++) {
+          if (i != 5 && visitedNode[i]) outerVisitedCount++; // index 5 = F
+        }
+
+        if (nodesVisitedCount >= N_NODE) {
+          // semua 6 node selesai, kembali ke start
+          Serial.println("Semua node selesai. Kembali ke Node " + String(NODE_NAMES[startNodeIdx]));
+          routeProgress = N_NODE;
+          seekCenterMode = false; // perjalanan pulang pakai mode normal lagi
+          robotState = STATE_MOVING;
+          broadcastState("MOVING");
+        } else if (outerVisitedCount >= 5 && !visitedNode[5]) {
+          // 5 node luar sudah selesai, F belum dikunjungi -> aktifkan mode cari pusat
+          Serial.println("5 node luar selesai. Mode SEEK_CENTER diaktifkan untuk mencari F.");
+          seekCenterMode = true;
+          routeProgress++;
+          robotState = STATE_MOVING;
+          broadcastState("MOVING");
+        } else {
+          routeProgress++;
+          robotState = STATE_MOVING;
+          broadcastState("MOVING");
+        }
+      }
+      break;
+    }
+
+    case STATE_FINISHED: {
+      motorStop();
+      // diam di sini sampai di-reset manual lewat web
+      break;
+    }
+  }
+
+  // Deteksi selesai total: robot balik ke start node setelah semua node dikunjungi
+  if (robotState == STATE_MOVING && nodesVisitedCount >= N_NODE && routeProgress >= N_NODE) {
+    if (qrData.length() > 0) {
+      int nodeIdx = getNodeFromQR(qrData);
+      if (nodeIdx == startNodeIdx) {
+        motorStop();
+        Serial.println("Robot kembali ke start. MISI SELESAI.");
+        robotState = STATE_FINISHED;
+        broadcastState("FINISHED");
+      }
+    }
+  }
+}

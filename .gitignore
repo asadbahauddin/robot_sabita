@@ -1,0 +1,7 @@
+# Python
+__pycache__/
+*.pyc
+
+# Log telemetry robot -- dibuat otomatis tiap sabita_server.py jalan,
+# bukan source code, bisa besar. Regenerate sendiri saat dibutuhkan.
+tools/logs/*.csv
