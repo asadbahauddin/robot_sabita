@@ -35,8 +35,7 @@ from aiohttp import web, WSMsgType, ClientConnectorError
 SENSOR_CSV_FIELDS = [
     "recv_iso", "t_rel_s", "state", "nav_prev", "nav_curr", "nav_next", "nav_step",
     "s1", "s2", "s3", "s4", "s6",
-    "r1", "r2", "r3", "r4", "r6",
-    "pos", "err", "corr", "kp", "ki", "kd", "arah",
+    "pos", "err", "corr", "kp", "ki", "kd", "arah", "last_qr",
 ]
 
 
@@ -60,6 +59,37 @@ class Hub:
             self._csv_writer.writeheader()
             self._csv_file.flush()
 
+        # Log latar belakang (di atas) selalu jalan otomatis sejak server start --
+        # itu jaring pengaman. rec_* di bawah ini terpisah: file baru yang cuma
+        # aktif kalau user pencet REC:START di dashboard, buat menandai sesi tes
+        # tertentu supaya gampang dicari lagi tanpa perlu filter t_rel_s manual.
+        self.rec_file = None
+        self.rec_writer = None
+        self.rec_path = None
+
+    def start_recording(self):
+        if self.rec_file:
+            self.stop_recording()
+        log_dir = os.path.dirname(self.log_path)
+        path = os.path.join(log_dir, f"recording_{datetime.now():%Y%m%d_%H%M%S}.csv")
+        self.rec_file = open(path, "a", newline="", encoding="utf-8")
+        self.rec_writer = csv.DictWriter(self.rec_file, fieldnames=SENSOR_CSV_FIELDS)
+        self.rec_writer.writeheader()
+        self.rec_file.flush()
+        self.rec_path = path
+        print(f"[rec] mulai rekam ke {path}")
+        return path
+
+    def stop_recording(self):
+        path = self.rec_path
+        if self.rec_file:
+            self.rec_file.close()
+            print(f"[rec] rekaman selesai: {path}")
+        self.rec_file = None
+        self.rec_writer = None
+        self.rec_path = None
+        return path
+
     def log_sensor_row(self, msg):
         row = {k: msg.get(k, "") for k in SENSOR_CSV_FIELDS}
         row["recv_iso"] = datetime.now().isoformat(timespec="milliseconds")
@@ -74,8 +104,12 @@ class Hub:
         row["nav_curr"] = nav_msg.get("curr", "")
         row["nav_next"] = nav_msg.get("next", "")
         row["nav_step"] = nav_msg.get("step", "")
+        row["last_qr"] = self.last_by_type.get("qr", {}).get("data", "")
         self._csv_writer.writerow(row)
         self._csv_file.flush()
+        if self.rec_writer:
+            self.rec_writer.writerow(row)
+            self.rec_file.flush()
 
     async def broadcast_to_browsers(self, obj):
         text = json.dumps(obj, ensure_ascii=False)
@@ -151,6 +185,9 @@ def make_app(hub: Hub, dashboard_path):
         print(f"[browser] connect (total={len(hub.browsers)})")
 
         await wsres.send_str(json.dumps({"type": "esplink", "connected": hub.esp_connected}))
+        rec_status = {"type": "rec", "active": hub.rec_file is not None,
+                      "file": os.path.basename(hub.rec_path) if hub.rec_path else ""}
+        await wsres.send_str(json.dumps(rec_status))
         for typ, msg in hub.last_by_type.items():
             try:
                 await wsres.send_str(json.dumps(msg, ensure_ascii=False))
@@ -160,7 +197,14 @@ def make_app(hub: Hub, dashboard_path):
         try:
             async for wsmsg in wsres:
                 if wsmsg.type == WSMsgType.TEXT:
-                    await hub.send_to_esp(wsmsg.data)
+                    if wsmsg.data == "REC:START":
+                        path = hub.start_recording()
+                        await hub.broadcast_to_browsers({"type": "rec", "active": True, "file": os.path.basename(path)})
+                    elif wsmsg.data == "REC:STOP":
+                        hub.stop_recording()
+                        await hub.broadcast_to_browsers({"type": "rec", "active": False, "file": ""})
+                    else:
+                        await hub.send_to_esp(wsmsg.data)
                 elif wsmsg.type == WSMsgType.ERROR:
                     break
         finally:

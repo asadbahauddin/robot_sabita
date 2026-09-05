@@ -39,7 +39,7 @@ canvas#mapCanvas{width:100%;background:#0f1117;border-radius:8px;display:block}
 .sb{width:50px;height:50px;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-weight:bold;background:#2a2d3e;border:2px solid #3a3d4e;transition:.15s}
 .sb.hi{background:#22c55e;border-color:#16a34a;color:#000}
 .sl{font-size:9px;opacity:.7}.sv{font-size:13px}
-.rw{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;text-align:center;margin-bottom:8px}
+.rw{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;text-align:center;margin-bottom:8px}
 .rc{font-size:10px;color:#94a3b8}.rv{color:#f59e0b;font-size:11px}
 
 .gauge{position:relative;height:34px;background:#2a2d3e;border-radius:6px;margin:6px 0 10px;overflow:hidden}
@@ -116,6 +116,19 @@ canvas.chart{width:100%;height:110px!important}
     <div class="pt" id="PT">0 / 6 node dikunjungi</div>
   </div>
 
+  <div class="card" id="rcCard" hidden>
+    <div class="tt">Perbandingan Rute ACO vs Aktual (misi selesai)</div>
+    <div class="metrics" style="grid-template-columns:1fr 1fr">
+      <div class="metric"><div class="l">RUTE ACO (optimal)</div><div class="v" id="rcAco" style="font-size:12px;font-family:monospace">-</div></div>
+      <div class="metric"><div class="l">RUTE AKTUAL</div><div class="v" id="rcActual" style="font-size:12px;font-family:monospace">-</div></div>
+    </div>
+    <div class="metrics" style="grid-template-columns:1fr 1fr 1fr;margin-top:8px">
+      <div class="metric"><div class="l">JARAK ACO</div><div class="v" id="rcAcoLen">-</div></div>
+      <div class="metric"><div class="l">JARAK AKTUAL</div><div class="v" id="rcActualLen">-</div></div>
+      <div class="metric"><div class="l">EFISIENSI</div><div class="v" id="rcEff" style="color:#22c55e">-</div></div>
+    </div>
+  </div>
+
   <div class="card">
     <div class="tt">Graf Pameran (posisi sesuai banner fisik)</div>
     <canvas id="mapCanvas" width="480" height="420"></canvas>
@@ -132,8 +145,11 @@ canvas.chart{width:100%;height:110px!important}
     <div class="qd em" id="QD">Menunggu scan...</div>
     <div class="qh" id="QH"></div>
     <a href="/download-log" class="btn btn-purple" style="text-decoration:none;display:block;text-align:center">
-      ⬇ DOWNLOAD LOG CSV
+      ⬇ DOWNLOAD LOG UTAMA (selalu jalan otomatis)
     </a>
+    <div class="manual-status" id="RECS" style="margin-top:8px">Rekaman sesi: nonaktif</div>
+    <button class="btn btn-green" id="RECB" onclick="toggleRec()">● MULAI REKAM SESI INI</button>
+    <div class="pt">Log utama di atas selalu jalan sejak server start. Tombol ini bikin file CSV terpisah khusus mulai dari sekarang, biar gampang dicari lagi tanpa filter waktu manual.</div>
   </div>
 
 </div>
@@ -148,15 +164,9 @@ canvas.chart{width:100%;height:110px!important}
       <div class="sb" id="B4"><div class="sl">S4</div><div class="sv" id="V4">0</div></div>
       <div class="sb" id="B6"><div class="sl">S6</div><div class="sv" id="V6">0</div></div>
     </div>
-    <div class="rw">
-      <div class="rc">S1<br><span class="rv" id="R1">-</span></div>
-      <div class="rc">S2<br><span class="rv" id="R2">-</span></div>
-      <div class="rc">S3<br><span class="rv" id="R3">-</span></div>
-      <div class="rc">S4<br><span class="rv" id="R4">-</span></div>
-      <div class="rc">S6<br><span class="rv" id="R6">-</span></div>
-    </div>
-    <div class="lbl" style="font-size:10px;color:#64748b;margin-bottom:2px">Posisi tertimbang (-2 kiri .. +2 kanan)</div>
-    <div class="gauge"><div class="mid"></div><span class="lbl left">-2</span><span class="lbl right">+2</span>
+    <div class="pt" style="margin-bottom:8px">Sensor TCRT5000+LM393 (digital, threshold diatur trimpot fisik di modul -- kotak hijau = kena garis hitam, LOW(0)=garis/HIGH(1)=putih, dikonfirmasi tes fisik). Tidak ada lagi kalibrasi software.</div>
+    <div class="lbl" style="font-size:10px;color:#64748b;margin-bottom:2px">Posisi tertimbang (-2 kiri .. +2 kanan, S3=tengah)</div>
+    <div class="gauge"><div class="mid" title="S3 (tengah)"></div><span class="lbl left">-2 (S1)</span><span class="lbl right">+2 (S6)</span>
       <div class="marker" id="posMarker" style="left:50%"></div></div>
     <div class="metrics">
       <div class="metric"><div class="l">ARAH</div><div class="v" id="mArah" style="font-size:12px">-</div></div>
@@ -166,8 +176,21 @@ canvas.chart{width:100%;height:110px!important}
   </div>
 
   <div class="card">
+    <div class="tt">Mode Pindah Manual</div>
+    <div class="manual-status" id="MS">Mode manual nonaktif</div>
+    <button class="btn btn-blue" id="MB" onclick="toggleManual()">AKTIFKAN MODE MANUAL</button>
+    <div class="pad">
+      <div class="empty"></div><button class="btn btn-blue" data-move="MAJU" style="margin:0">⬆</button><div class="empty"></div>
+      <button class="btn btn-yellow" data-move="KIRI" style="margin:0">⬅</button>
+      <button class="btn btn-red" data-move="STOP" style="margin:0">■</button>
+      <button class="btn btn-yellow" data-move="KANAN" style="margin:0">➡</button>
+      <div class="empty"></div><button class="btn btn-blue" data-move="MUNDUR" style="margin:0">⬇</button><div class="empty"></div>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="tt">Grafik Live (5 detik terakhir)</div>
-    <div class="chart-wrap"><div class="lbl">ADC Sensor S1-S6</div><canvas class="chart" id="chartAdc"></canvas></div>
+    <div class="chart-wrap"><div class="lbl">Sensor digital S1-S4,S6 (0=garis, 1=putih)</div><canvas class="chart" id="chartAdc"></canvas></div>
     <div class="chart-wrap"><div class="lbl">PID: error vs correction</div><canvas class="chart" id="chartPid"></canvas></div>
     <div class="chart-wrap"><div class="lbl">Estimasi kecepatan motor R/L (dihitung di dashboard)</div><canvas class="chart" id="chartSpeed"></canvas></div>
   </div>
@@ -195,21 +218,9 @@ canvas.chart{width:100%;height:110px!important}
     <button class="btn btn-red" onclick="W('RESET')">RESET MISI</button>
     <button class="btn btn-yellow" onclick="W('STOP_AUDIO')">STOP AUDIO</button>
     <div class="sr"><label>Speed (BASE)</label><input type="range" class="sl2" id="SP" min="0" max="255" value="70"><span class="sv2" id="SPV">70</span></div>
-    <div class="sr"><label>Trim Kiri</label><input type="range" class="sl2" id="LT" min="-50" max="50" value="10"><span class="sv2" id="LTV">10</span></div>
+    <div class="sr"><label>Trim Kiri</label><input type="range" class="sl2" id="LT" min="-50" max="50" value="0"><span class="sv2" id="LTV">0</span></div>
     <div class="sr"><label>Trim Kanan</label><input type="range" class="sl2" id="RT" min="-50" max="50" value="0"><span class="sv2" id="RTV">0</span></div>
-    <div class="sr"><label>Threshold</label><input type="range" class="sl2" id="TH" min="500" max="3500" value="2993"><span class="sv2" id="THV" style="color:#a855f7">2993</span></div>
     <div class="sr"><label>Volume</label><input type="range" class="sl2" id="VOL" min="0" max="18" value="18"><span class="sv2" id="VV" style="color:#f59e0b">18</span></div>
-
-    <div class="tt" style="margin-top:6px">Mode Pindah Manual</div>
-    <div class="manual-status" id="MS">Mode manual nonaktif</div>
-    <button class="btn btn-blue" id="MB" onclick="toggleManual()">AKTIFKAN MODE MANUAL</button>
-    <div class="pad">
-      <div class="empty"></div><button class="btn btn-blue" data-move="MAJU" style="margin:0">⬆</button><div class="empty"></div>
-      <button class="btn btn-yellow" data-move="KIRI" style="margin:0">⬅</button>
-      <button class="btn btn-red" data-move="STOP" style="margin:0">■</button>
-      <button class="btn btn-yellow" data-move="KANAN" style="margin:0">➡</button>
-      <div class="empty"></div><button class="btn btn-blue" data-move="MUNDUR" style="margin:0">⬇</button><div class="empty"></div>
-    </div>
   </div>
 
 </div>
@@ -249,7 +260,28 @@ function onMsg(d){
   else if(d.type==='qr') onQr(d);
   else if(d.type==='sensor') onSensor(d);
   else if(d.type==='mode') onMode(d);
+  else if(d.type==='rec') onRec(d);
+  else if(d.type==='routecompare') onRouteCompare(d);
 }
+
+function onRouteCompare(d){
+  g('rcCard').hidden = false;
+  g('rcAco').textContent = d.aco_route || '-';
+  g('rcActual').textContent = d.actual_route || '-';
+  g('rcAcoLen').textContent = Number(d.aco_length).toFixed(2)+' m';
+  g('rcActualLen').textContent = Number(d.actual_length).toFixed(2)+' m';
+  g('rcEff').textContent = Number(d.efficiency).toFixed(1)+'%';
+}
+
+let recOn=false;
+function onRec(d){
+  recOn = !!d.active;
+  const el=g('RECS');
+  el.textContent = recOn ? 'Rekaman sesi: AKTIF -> '+d.file : 'Rekaman sesi: nonaktif';
+  el.classList.toggle('on', recOn);
+  g('RECB').textContent = recOn ? '■ STOP REKAM SESI INI' : '● MULAI REKAM SESI INI';
+}
+function toggleRec(){ W(recOn ? 'REC:STOP' : 'REC:START'); }
 
 function onState(d){
   const s=g('SD'); s.className='sd';
@@ -260,6 +292,7 @@ function onState(d){
     MANUAL:['Mode manual aktif - robot bisa dipindah','manual']};
   const m=map[d.state]||[d.state,''];
   s.textContent=m[0]; if(m[1]) s.classList.add(m[1]);
+  if(d.state==='IDLE') g('rcCard').hidden = true;
 }
 function onNav(d){
   prev=d.prev; curr=d.curr; next=d.next;
@@ -301,11 +334,10 @@ function onMode(d){
 // ---- sensor + PID + charts ----
 const HIST_MS = 5000;
 let adcHist=[], pidHist=[], speedHist=[];
-let lastBase=70, lastLTrim=10, lastRTrim=0;
+let lastBase=70, lastLTrim=0, lastRTrim=0;
 
 function onSensor(d){
   US('B1','V1',d.s1); US('B2','V2',d.s2); US('B3','V3',d.s3); US('B4','V4',d.s4); US('B6','V6',d.s6);
-  g('R1').textContent=d.r1; g('R2').textContent=d.r2; g('R3').textContent=d.r3; g('R4').textContent=d.r4; g('R6').textContent=d.r6;
   g('mArah').textContent=d.arah;
   g('mErr').textContent=Number(d.err).toFixed(2);
   g('mCorr').textContent=Number(d.corr).toFixed(2);
@@ -313,12 +345,13 @@ function onSensor(d){
   g('curKi').textContent=Number(d.ki).toFixed(3);
   g('curKd').textContent=Number(d.kd).toFixed(2);
 
+  // Rentang posisi tertimbang: -2 (S1) .. +2 (S6), S3=tengah=0 (lihat computePID di firmware)
   const pos = Number(d.pos);
   const pct = Math.max(0, Math.min(100, (pos+2)/4*100));
   g('posMarker').style.left = pct+'%';
 
   const t = performance.now();
-  adcHist.push({t, r1:+d.r1, r2:+d.r2, r3:+d.r3, r4:+d.r4, r6:+d.r6});
+  adcHist.push({t, s1:+d.s1, s2:+d.s2, s3:+d.s3, s4:+d.s4, s6:+d.s6});
   pidHist.push({t, err:+d.err, corr:+d.corr});
   const speedR = clamp((lastBase+lastRTrim) - (+d.corr), 0, 255);
   const speedL = clamp((lastBase+lastLTrim) + (+d.corr), 0, 255);
@@ -330,7 +363,8 @@ function onSensor(d){
   updateCharts();
 }
 function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
-function US(bi,vi,v){ g(vi).textContent=v; g(bi).classList.toggle('hi', v===1); }
+// TCRT5000+LM393 (dikoreksi lagi setelah tes fisik ulang): LOW(0)=kena garis hitam, HIGH(1)=putih -- kotak hijau saat v===0 (kena garis)
+function US(bi,vi,v){ g(vi).textContent=v; g(bi).classList.toggle('hi', v===0); }
 
 // ================= CANVAS: GRAF PAMERAN =================
 const cv = g('mapCanvas'), ctx = cv.getContext('2d');
@@ -409,8 +443,8 @@ function mkChart(id, datasets){
   });
 }
 const COLORS = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4'];
-const chartAdc = mkChart('chartAdc', ['r1','r2','r3','r4','r6'].map((k,i)=>(
-  { label:'S'+(k==='r6'?6:k[1]), data:[], borderColor:COLORS[i], backgroundColor:'transparent' })));
+const chartAdc = mkChart('chartAdc', ['s1','s2','s3','s4','s6'].map((k,i)=>(
+  { label:'S'+k[1], data:[], borderColor:COLORS[i], backgroundColor:'transparent' })));
 const chartPid = mkChart('chartPid', [
   { label:'error', data:[], borderColor:'#f59e0b', backgroundColor:'transparent' },
   { label:'correction', data:[], borderColor:'#3b82f6', backgroundColor:'transparent' },
@@ -423,7 +457,7 @@ const chartSpeed = mkChart('chartSpeed', [
 function updateCharts(){
   const t0 = performance.now()-HIST_MS;
   const rel = t => (t-t0)/1000;
-  ['r1','r2','r3','r4','r6'].forEach((k,i)=>{
+  ['s1','s2','s3','s4','s6'].forEach((k,i)=>{
     chartAdc.data.datasets[i].data = adcHist.map(p=>({x:rel(p.t), y:p[k]}));
   });
   chartPid.data.datasets[0].data = pidHist.map(p=>({x:rel(p.t), y:p.err}));
@@ -455,7 +489,6 @@ function SL(id,vid,cmd,onApply){
 SL('SP','SPV','SPEED:', v=>{ lastBase=+v; });
 SL('LT','LTV','LTRIM:', v=>{ lastLTrim=+v; });
 SL('RT','RTV','RTRIM:', v=>{ lastRTrim=+v; });
-SL('TH','THV','THR:');
 SL('VOL','VV','VOL:');
 
 function toggleManual(){ W(manualOn ? 'MANUAL:OFF' : 'MANUAL:ON'); }

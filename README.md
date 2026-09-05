@@ -10,7 +10,7 @@ Sejak v10, ESP32 **tidak lagi menyajikan HTML**. Semua dashboard/UI pindah
 ke laptop supaya beban ESP32 minimal (hanya WiFi AP + WebSocket + motor + sensor).
 
 ```
-[Sensor S1-S6, GM67 QR, DFPlayer]
+[Sensor S1-S4,S6 (digital), GM67 QR, DFPlayer]
             |
          ESP32  (WiFi AP: SABITA_ROBOT / 12345678)
             |  WebSocket ws://192.168.4.1:81  (data sensor/nav/state/qr/dfp,
@@ -74,27 +74,41 @@ terputus (lihat 2 indikator titik di header: "Server laptop" & "Robot (ESP32)").
 - **Peta pameran real-time** (canvas): posisi 6 node sesuai banner fisik, edge
   + jarak, node terkunjungi hijau, node aktif pulse merah, rute ACO garis biru
   putus-putus, arah tujuan berikutnya garis oranye putus-putus.
-- **Sensor line-follower**: S1-S6 HIGH/LOW, nilai ADC mentah, indikator posisi
-  tertimbang (-2..+2), error & correction PID saat ini.
-- **Grafik live** (Chart.js, rolling 5 detik): ADC S1-S6, error vs correction,
-  estimasi kecepatan motor kanan/kiri.
+- **Sensor line-follower**: S1-S4,S6 digital (1=kena garis hitam, 0=putih),
+  indikator posisi tertimbang (-2..+2, S3=tengah), error & correction PID saat ini.
+- **Grafik live** (Chart.js, rolling 5 detik): status digital S1-S4,S6, error vs
+  correction, estimasi kecepatan motor kanan/kiri.
 - **PID tuning**: slider+input Kp/Ki/Kd, tombol Apply mengirim ke robot,
   ditampilkan juga nilai yang sedang AKTIF di robot (dari telemetry, bukan cuma
   nilai slider) supaya tidak salah kira sudah ter-apply padahal belum.
-- **Kontrol**: reset misi, speed (base PID), trim kiri/kanan, threshold ADC,
-  volume, stop audio, mode pindah manual (tombol arah tanpa perlu scan QR).
+- **Kontrol**: reset misi, speed (base PID), trim kiri/kanan, volume, stop
+  audio, mode pindah manual (tombol arah tanpa perlu scan QR).
 - **Log**: riwayat QR ter-scan, tombol download CSV log sensor yang sedang berjalan.
 
 Semua data sensor (setiap ~50ms) otomatis dicatat ke
 `tools/logs/robot_log_<waktu>.csv` -- berguna untuk analisis pasca-kejadian
 (mis. episode robot bergerak aneh) tanpa harus menonton dashboard secara live.
 
+## Sensor line-follower
+
+Modul **TCRT5000 + LM393** (komparator on-board) -- output digital murni,
+threshold diatur lewat trimpot fisik di tiap modul, bukan di software. Firmware
+cuma `digitalRead()`, tidak ada lagi ADC/kalibrasi putih-hitam. Konvensi
+(dikonfirmasi lewat tes fisik ulang 2026-09-05): **LOW (0) = di atas garis
+hitam**, **HIGH (1) = di atas lantai putih**.
+
+Pin: `S1=GPIO33, S2=GPIO32, S3=GPIO35(tengah), S4=GPIO34, S6=GPIO39`.
+
 ## Tuning PID line-follower
 
 Formula (lihat `computePID()` di `robot_sabita.ino`):
 
 ```
-position = weighted_sum(S1..S6) / max(sensor_aktif, 1)   # bobot -2,-1,0,+1,+2
+# Posisi = rata-rata tertimbang sensor yg LOW (kena garis), bobot posisi
+# fisik -2,-1,0,+1,+2 (S1,S2,S3,S4,S6 -- S3=tengah). Kalau tidak ada sensor
+# yg LOW sama sekali (garis hilang), posisi dituntun dari error terakhir yg
+# diredam bertahap (bukan reset lurus buta).
+position = sum(SENSOR_POS[i] * (sensor[i]==LOW)) / count(sensor[i]==LOW)
 error    = position
 Kp_eff   = Kp*2.0 jika |error|>1.5, Kp*1.3 jika |error|>0.8, else Kp*1.0
 integral = clamp(integral+error, -50, 50)
@@ -115,9 +129,8 @@ dijadikan default baru.
 | Perintah | Keterangan |
 |---|---|
 | `KP:xx`, `KI:xx.xx`, `KD:xx` | Set parameter PID |
-| `SPEED:xx` | Base speed (0-255) |
+| `SPEED:xx` / `BS:xx` | Base speed PID (0-255) -- dua perintah, efek identik |
 | `LTRIM:xx`, `RTRIM:xx` | Trim kiri/kanan (-50..50) |
-| `THR:xx` | Threshold ADC (0-4095) |
 | `VOL:xx` | Volume DFPlayer (0-18) |
 | `RESET` | Reset misi ke IDLE |
 | `STOP_AUDIO` | Hentikan audio yang sedang main |
@@ -129,9 +142,11 @@ dijadikan default baru.
 - `sabita_aco_sim.py [START_NODE]` -- simulasi offline: hitung rute ACO
   (parameter identik firmware) dan render animasi GIF.
 - `live_monitor.py` -- monitor telemetry live alternatif (matplotlib, tanpa
-  browser), dengan strip-chart riwayat sensor S1-S6 dan deteksi otomatis
-  "pembalikan arah tajam" -- berguna untuk debug cepat lewat terminal/IDE Python
-  tanpa perlu buka dashboard.html.
+  browser), dengan strip-chart riwayat sensor dan deteksi otomatis "pembalikan
+  arah tajam" -- berguna untuk debug cepat lewat terminal/IDE Python tanpa
+  perlu buka dashboard.html. **Catatan**: skrip ini belum diverifikasi ulang
+  terhadap skema sensor digital S1-S4,S6 + JSON `jSensor()` terbaru (field
+  `r1..r7` sudah tidak dikirim firmware lagi) -- cek dulu sebelum dipakai.
 
 Keduanya pakai environment conda yang sama (`sabita_sim`); install dependency
 tambahan dengan `pip install -r simulasi/requirements.txt`.

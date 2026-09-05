@@ -1,4 +1,11 @@
 {
     "python-envs.defaultEnvManager": "ms-python.python:system",
-    "python.defaultInterpreterPath": "C:\\Users\\indie\\.conda\\envs\\sabita_sim\\python.exe"
+    "python.defaultInterpreterPath": "C:\\Users\\indie\\.conda\\envs\\sabita_sim\\python.exe",
+    "python-envs.pythonProjects": [
+        {
+            "path": ".",
+            "envManager": "ms-python.python:conda",
+            "packageManager": "ms-python.python:conda"
+        }
+    ]
 }
