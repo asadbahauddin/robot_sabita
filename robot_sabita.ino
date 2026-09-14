@@ -147,6 +147,17 @@ int gSpeedR = 0, gSpeedL = 0;  // PWM motor R/L TERAKHIR yg BENAR2 dikirim ledcW
 int lastTurnDir = 0;          // -1=terakhir belok/koreksi kiri, 0=lurus, +1=kanan
 unsigned long lostSince = 0;   // millis() saat garis pertama kali hilang, 0=lagi tidak hilang
 
+// "Salah node" (nyasar ke cabang persimpangan yg salah) -- lihat loop()/case
+// MOVING. Begitu QR yg kebaca BUKAN nextIdx (node yg direncanakan ACO), robot
+// TIDAK dianggap sampai (bukan onArrived()), tapi putar balik otomatis &
+// coba lagi menuju nextIdx yg sama.
+unsigned long turnAroundUntil = 0;  // selagi millis()<ini, motor di-override "putar balik", bukan lineFollow() biasa
+bool turningAround = false;          // true selama proses putar balik (biar bisa kirim ulang state MOVING pas selesai)
+int wrongNodeRetries = 0;            // reset di onArrived() (sukses) & resetPID()
+#define TURN_AROUND_MS 900            // durasi putar ~180 derajat, OPEN-LOOP (tdk ada sensor arah) -- TUNE manual sesuai robot asli
+#define WRONG_NODE_MAX_RETRIES 3      // biar gak puter2 selamanya kalau memang salah terus
+bool stuckWrongNode = false;         // true stlh retry abis -- robot berhenti total, butuh intervensi manual (MANUAL:ON / RESET)
+
 // Diset true saat QR ter-scan ketika robotState==MOVING (di loop()); dipakai
 // buat pelan-pelan sesaat sebelum sampai node. Direset di onArrived().
 // (bagian dari logika QR yg TIDAK diubah -- sekarang tidak dibaca lineFollow()
@@ -157,6 +168,10 @@ void resetPID(){
   gLastMode = "OFF";
   lastTurnDir = 0;
   lostSince = 0;
+  turnAroundUntil = 0;
+  turningAround = false;
+  wrongNodeRetries = 0;
+  stuckWrongNode = false;
 }
 
 // Broadcast transisi mode ke dashboard/CSV secara real-time -- cuma kirim
@@ -483,6 +498,7 @@ void playNode(int idx){
 // ===================== NODE ARRIVED =====================
 void onArrived(int idx){
   motorStop();
+  wrongNodeRetries = 0;  // kedatangan sah -- reset hitungan percobaan salah-node
   visited[idx]=true;nVisited++;
   prevIdx=currIdx;currIdx=idx;
   nextIdx=-1;
@@ -639,7 +655,28 @@ void loop(){
 
   bool driving = (!manualMode && robotState==MOVING);
   if(driving) {
-    lineFollow();
+    if (stuckWrongNode) {
+      // Sudah gagal WRONG_NODE_MAX_RETRIES kali -- menyerah, berhenti total
+      // (bukan coba lagi selamanya), butuh intervensi manual.
+      motorStop();
+      gLastMode="STUCK"; gSpeedR=0; gSpeedL=0;
+      reportPidMode();
+    } else if (millis() < turnAroundUntil) {
+      // Lagi putar balik otomatis (salah node -- lihat case MOVING di bawah).
+      // Arah putar SENGAJA tetap/konsisten (motorKanan()), bukan tergantung
+      // lastTurnDir, biar durasi TURN_AROUND_MS bisa diandalkan/di-tune.
+      motorKanan();
+      gLastMode="TURNAROUND"; gSpeedR=MOTOR_SPEED; gSpeedL=-MOTOR_SPEED;
+      reportPidMode();
+    } else {
+      if (turningAround) {
+        // Putar balik baru saja selesai -- kirim ulang state MOVING supaya
+        // dashboard keluar dari tampilan WRONG_NODE.
+        turningAround = false;
+        String s=jState("MOVING"); bcast(s);
+      }
+      lineFollow();
+    }
   } else if (gLastMode != "OFF") {
     // Motor sudah dihentikan terpisah lewat motorStop() di FSM (IDLE/ARRIVED)
     // -- ini cuma supaya telemetry (mode/speedR/speedL di dashboard) tidak
@@ -774,8 +811,31 @@ void loop(){
               Serial.println(" "+String(bestL,2)+"m");
               String rt=jRoute(); bcast(rt);
             }
+            onArrived(idx);
+          } else if (nextIdx>=0 && idx!=nextIdx) {
+            // Sampai di node yg BUKAN direncanakan ACO (nextIdx) -- nyasar
+            // ke cabang persimpangan yg salah. JANGAN dianggap kedatangan
+            // sah (bukan onArrived() -- idx tetap !visited, audio TIDAK
+            // diputar), putar balik otomatis & coba lagi menuju nextIdx yg
+            // sama (maks WRONG_NODE_MAX_RETRIES kali).
+            wrongNodeRetries++;
+            Serial.printf("SALAH NODE: sampai %c, seharusnya %c (percobaan %d/%d)\n",
+              NNAME[idx], NNAME[nextIdx], wrongNodeRetries, WRONG_NODE_MAX_RETRIES);
+            if (wrongNodeRetries > WRONG_NODE_MAX_RETRIES) {
+              stuckWrongNode = true;
+              String s="{"+KV("type","state")+","+KV("state","STUCK")+","
+                +KV("got",String(NNAME[idx]))+","+KV("expected",String(NNAME[nextIdx]))+"}";
+              bcast(s);
+            } else {
+              turnAroundUntil = millis() + TURN_AROUND_MS;
+              turningAround = true;
+              String wn="{"+KV("type","state")+","+KV("state","WRONG_NODE")+","
+                +KV("got",String(NNAME[idx]))+","+KV("expected",String(NNAME[nextIdx]))+"}";
+              bcast(wn);
+            }
+          } else {
+            onArrived(idx);
           }
-          onArrived(idx);
         }
       }
       break;
