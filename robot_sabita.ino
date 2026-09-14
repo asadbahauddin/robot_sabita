@@ -182,8 +182,23 @@ bool stuckWrongNode = false;         // true stlh retry abis -- robot berhenti t
 // (POS_X/POS_Y) begitu MOVING dimulai -- lihat computeGeoTurn(). TAMBAHAN,
 // bukan pengganti line-follower/recovery yg sudah ada (instruksi user
 // 2026-09-14).
-unsigned long geoTurnUntil = 0;  // selagi millis()<ini, motor di-override belok terjadwal (bukan lineFollow() biasa)
-int geoTurnDir = 0;              // +1=kanan(motorKanan), -1=kiri(motorKiri), 0=tidak ada belok terjadwal
+//
+// PENTING (koreksi 2026-09-15): belokan TIDAK langsung dieksekusi begitu
+// MOVING mulai lagi (itu salah -- persimpangan fisiknya ada DI TENGAH
+// perjalanan menuju node berikutnya, bukan tepat di titik keberangkatan,
+// jadi timer dari keberangkatan keburu habis sebelum robot benar2 sampai
+// di persimpangan yg dimaksud). Sekarang: arah+durasi dihitung & DITUNGGU
+// (geoTurnPending) sampai sensor BENAR2 mendeteksi persimpangan (>=3
+// sensor hitam sekaligus) -- baru dieksekusi (geoTurnUntil). Supaya tidak
+// kepicu oleh zona node yg BARU SAJA ditinggalkan (yg juga >=3 sensor
+// hitam), trigger baru "diarm" (geoTurnArmed) setelah robot kelihatan
+// bener2 di jalur normal (bkn persimpangan) selama >= GEO_TURN_ARM_MS.
+unsigned long geoTurnUntil = 0;   // selagi millis()<ini, motor di-override belok terjadwal (bukan lineFollow() biasa)
+int geoTurnDir = 0;               // +1=kanan(motorKanan), -1=kiri(motorKiri), 0=tidak ada belok terjadwal
+bool geoTurnPending = false;      // true = ada belokan terjadwal, NUNGGU persimpangan fisik terdeteksi
+bool geoTurnArmed = false;        // true = robot sudah kelihatan bener2 di jalur normal (bkn zona keberangkatan sendiri), trigger boleh nyala
+unsigned long geoTurnClearSince = 0;    // millis() sejak MULAI terus-menerus di jalur normal (hitCount<3)
+unsigned long geoTurnDurationMs = 0;    // durasi manuver, dipakai begitu trigger nyala
 
 // ===== Parameter gerak yg bisa di-TUNING LIVE lewat WS (TANPA upload ulang
 // firmware) -- lihat handler pesan WS di wsEvent(). Nilai default = sama
@@ -202,6 +217,7 @@ unsigned long TURN_AROUND_MS = 900;    // durasi putar ~180 derajat, OPEN-LOOP (
 int WRONG_NODE_MAX_RETRIES   = 3;      // biar gak puter2 selamanya kalau memang salah terus
 bool  ENABLE_GEO_TURN   = true;   // matikan cepat lewat Python (GEOTURN:0) kalau ternyata meleset, TANPA reflash -- lihat computeGeoTurn()
 float GEO_TURN_MIN_DEG  = 20.0f;  // di bawah sudut ini (hampir lurus) TIDAK usah belok terjadwal, biarkan lineFollow() saja
+unsigned long GEO_TURN_ARM_MS = 400;  // minimal waktu terus-menerus di jalur normal sblm trigger persimpangan boleh nyala (hindari kepicu zona keberangkatan sendiri)
 
 // Diset true saat QR ter-scan ketika robotState==MOVING (di loop()); dipakai
 // buat pelan-pelan sesaat sebelum sampai node. Direset di onArrived().
@@ -218,6 +234,10 @@ void resetPID(){
   stuckWrongNode = false;
   geoTurnUntil = 0;
   geoTurnDir = 0;
+  geoTurnPending = false;
+  geoTurnArmed = false;
+  geoTurnClearSince = 0;
+  geoTurnDurationMs = 0;
 }
 
 // Belok terjadwal di persimpangan, dihitung dari geometri Graf Pameran
@@ -234,7 +254,8 @@ void resetPID(){
 // misi akan FINISHED) SENGAJA tidak dapat belok terjadwal -- sesuai
 // instruksi user 2026-09-14 ("pertama kali... lurus saja").
 void computeGeoTurn(){
-  geoTurnUntil = 0; geoTurnDir = 0;
+  geoTurnUntil = 0; geoTurnDir = 0; geoTurnDurationMs = 0;
+  geoTurnPending = false; geoTurnArmed = false; geoTurnClearSince = 0;
   if (!ENABLE_GEO_TURN) return;
   if (prevIdx < 0 || nextIdx < 0) return;
   float vinX  = POS_X[currIdx]-POS_X[prevIdx], vinY  = POS_Y[currIdx]-POS_Y[prevIdx];
@@ -243,12 +264,12 @@ void computeGeoTurn(){
   float dot   = vinX*voutX + vinY*voutY;
   float angleDeg = atan2(cross, dot) * 180.0f / PI;
   if (fabs(angleDeg) < GEO_TURN_MIN_DEG) return;  // hampir lurus, gak usah manuver
-  unsigned long dur = (unsigned long)(TURN_AROUND_MS * (fabs(angleDeg)/180.0f));
+  geoTurnDurationMs = (unsigned long)(TURN_AROUND_MS * (fabs(angleDeg)/180.0f));
   geoTurnDir = (angleDeg < 0) ? +1 : -1;  // cross/sudut negatif = belok KANAN
-  geoTurnUntil = millis() + dur;
-  Serial.printf("GeoTurn %c->%c->%c: sudut=%.1f derajat, arah=%s, durasi=%lums\n",
+  geoTurnPending = true;  // TUNGGU sensor mendeteksi persimpangan fisik -- lihat loop()
+  Serial.printf("GeoTurn dijadwalkan %c->%c->%c: sudut=%.1f derajat, arah=%s, durasi=%lums (nunggu persimpangan)\n",
     NNAME[prevIdx], NNAME[currIdx], NNAME[nextIdx], angleDeg,
-    geoTurnDir>0?"KANAN":"KIRI", dur);
+    geoTurnDir>0?"KANAN":"KIRI", geoTurnDurationMs);
 }
 
 // Broadcast transisi mode ke dashboard/CSV secara real-time -- cuma kirim
@@ -673,6 +694,7 @@ void wsEvent(uint8_t num,WStype_t type,uint8_t* payload,size_t len){
     else if(msg.startsWith("WRONG_NODE_MAX_RETRIES:")){WRONG_NODE_MAX_RETRIES=msg.substring(23).toInt();Serial.println("WRONG_NODE_MAX_RETRIES="+String(WRONG_NODE_MAX_RETRIES));}
     else if(msg.startsWith("GEOTURN:"))               {ENABLE_GEO_TURN=(msg.substring(8).toInt()!=0);Serial.println("ENABLE_GEO_TURN="+String(ENABLE_GEO_TURN));}
     else if(msg.startsWith("GEO_TURN_MIN_DEG:"))       {GEO_TURN_MIN_DEG=msg.substring(17).toFloat();Serial.println("GEO_TURN_MIN_DEG="+String(GEO_TURN_MIN_DEG));}
+    else if(msg.startsWith("GEO_TURN_ARM_MS:"))        {GEO_TURN_ARM_MS=msg.substring(16).toInt();Serial.println("GEO_TURN_ARM_MS="+String(GEO_TURN_ARM_MS));}
   }
 }
 
@@ -728,6 +750,31 @@ void loop(){
 
   bool driving = (!manualMode && robotState==MOVING);
   if(driving) {
+    // Belok terjadwal (geoTurnPending) BARU dipicu begitu sensor BENAR2
+    // mendeteksi persimpangan (>=3 sensor hitam) DI TENGAH perjalanan --
+    // bukan tepat di keberangkatan (lihat catatan panjang di deklarasi
+    // geoTurnPending). "Diarm" dulu (geoTurnArmed) setelah robot terlihat
+    // di jalur normal terus-menerus >= GEO_TURN_ARM_MS, supaya zona node
+    // yg BARU SAJA ditinggalkan (juga >=3 sensor hitam) tidak langsung
+    // memicu belokan sebelum robot benar2 berangkat.
+    if (geoTurnPending) {
+      int hitCount = (s1==0)+(s2==0)+(s3==0)+(s4==0)+(s6==0);
+      if (hitCount >= 3) {
+        if (geoTurnArmed) {
+          // Persimpangan BERIKUTNYA (bukan zona keberangkatan sendiri) -- picu!
+          geoTurnPending = false; geoTurnArmed = false; geoTurnClearSince = 0;
+          geoTurnUntil = millis() + geoTurnDurationMs;
+          Serial.printf("GeoTurn TERPICU @ persimpangan: arah=%s durasi=%lums\n",
+            geoTurnDir>0?"KANAN":"KIRI", geoTurnDurationMs);
+        } else {
+          geoTurnClearSince = 0;  // masih zona keberangkatan -- reset penghitung "jalur bersih"
+        }
+      } else {
+        if (geoTurnClearSince == 0) geoTurnClearSince = millis();
+        if (!geoTurnArmed && millis()-geoTurnClearSince >= GEO_TURN_ARM_MS) geoTurnArmed = true;
+      }
+    }
+
     if (stuckWrongNode) {
       // Sudah gagal WRONG_NODE_MAX_RETRIES kali -- menyerah, berhenti total
       // (bukan coba lagi selamanya), butuh intervensi manual.
@@ -742,10 +789,11 @@ void loop(){
       gLastMode="TURNAROUND"; gSpeedR=MOTOR_SPEED; gSpeedL=-MOTOR_SPEED;
       reportPidMode();
     } else if (millis() < geoTurnUntil) {
-      // Belok terjadwal ke node berikutnya (dihitung sekali di
-      // computeGeoTurn() begitu MOVING dimulai, dari geometri Graf
-      // Pameran) -- TAMBAHAN, dijalankan SEBELUM lineFollow() normal
-      // dilanjutkan buat segmen lurus ke node berikutnya.
+      // Belok terjadwal ke node berikutnya (arah+durasi dihitung sekali
+      // di computeGeoTurn() begitu MOVING dimulai, dari geometri Graf
+      // Pameran, TAPI baru dieksekusi begitu persimpangan fisik
+      // terdeteksi -- lihat blok geoTurnPending di atas) -- TAMBAHAN,
+      // bukan pengganti lineFollow() normal yg dilanjutkan sesudahnya.
       if (geoTurnDir > 0) { motorKanan(); gSpeedR=MOTOR_SPEED; gSpeedL=-MOTOR_SPEED; }
       else                { motorKiri();  gSpeedR=-MOTOR_SPEED; gSpeedL=MOTOR_SPEED; }
       gLastMode="GEOTURN";

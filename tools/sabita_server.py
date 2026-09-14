@@ -67,8 +67,19 @@ TUNABLE_PARAMS = {
     # diketahui -- durasi PROPORSIONAL dari TURN_AROUND_MS (sudut/180).
     # GEOTURN:0 di sini buat matikan cepat kalau ternyata meleset di lapangan,
     # TANPA reflash.
+    #
+    # FIX 2026-09-15: awalnya belokan dieksekusi LANGSUNG begitu MOVING
+    # mulai (pakai timer dari keberangkatan) -- ternyata salah, karena
+    # persimpangan fisiknya ada DI TENGAH perjalanan, bukan di titik
+    # berangkat, jadi robot kepalang lanjut ke jalur lain sebelum benar-
+    # benar sampai persimpangan yg dimaksud. Sekarang belokan cuma
+    # DIJADWALKAN (arah+durasi) & baru DIEKSEKUSI begitu sensor BENAR2
+    # mendeteksi persimpangan (>=3 sensor hitam) di tengah jalan --
+    # GEO_TURN_ARM_MS mencegah itu kepicu oleh zona node yg baru saja
+    # ditinggalkan (yg juga >=3 sensor hitam sesaat setelah berangkat).
     "GEOTURN": 1,                  # 1=aktif, 0=nonaktif (fallback ke line-follower biasa)
     "GEO_TURN_MIN_DEG": 20,        # di bawah sudut ini (hampir lurus) gak usah belok terjadwal
+    "GEO_TURN_ARM_MS": 400,        # minimal waktu di jalur normal sblm trigger persimpangan boleh nyala
 }
 
 SENSOR_CSV_FIELDS = [
