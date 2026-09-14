@@ -344,22 +344,6 @@ def make_app(hub: Hub, dashboard_path, remote_path):
     return app
 
 
-def get_lan_ip():
-    # Trik umum: "connect" UDP ke alamat luar (gak benar2 kirim paket) cuma
-    # buat OS pilihkan interface/IP LAN yang aktif -- dipakai supaya HP di
-    # WiFi yang sama bisa langsung tahu alamat buat buka /remote, tanpa
-    # user perlu cari tau IP laptopnya sendiri secara manual.
-    import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
-
 async def main_async(args):
     here = os.path.dirname(os.path.abspath(__file__))
     dashboard_path = os.path.join(here, "dashboard.html")
@@ -384,9 +368,7 @@ async def main_async(args):
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", args.port)
     await site.start()
-    lan_ip = get_lan_ip()
-    print(f"[http] dashboard (laptop)  : http://localhost:{args.port}")
-    print(f"[http] remote KIRI/KANAN (HP, WiFi sama): http://{lan_ip}:{args.port}/remote")
+    print(f"[http] dashboard di http://localhost:{args.port}")
 
     esp_task = asyncio.create_task(esp_link_task(hub))
 
