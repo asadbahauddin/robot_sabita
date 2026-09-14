@@ -42,22 +42,19 @@ import time
 
 import websockets
 
-# ================= KARAKTERISASI MOTOR/RODA (2026-09-14) =================
-# Motor DC Gearbox 24V, 0.3A, tersedia 4 varian RPM (43/120/222/462, reduksi
-# 139:1/50:1/27:1/13:1). Dari CSV uji lapangan (gerakan_robot_uji_coba.csv):
-# kecepatan aktual ~0.20 m/s pada PWM MOTOR_SPEED=70 (dari 255). Asumsi
-# hubungan PWM->kecepatan LINEAR (v = pwm/255 * v_max_teoritis di PWM=255):
-#   v_max = 0.20 / (70/255) = 0.20 * 255/70 ~= 0.73 m/s
-# Dibandingkan v_max teoritis tiap varian (asumsi diameter roda 65mm --
-# CATATAN: ini beda dari roda "4 inch/100mm" yg disebut di percakapan
-# sebelumnya, PERLU DICEK ULANG diameter roda asli pas di lab):
-#   43 RPM  -> v_max=0.146 m/s   120 RPM -> v_max=0.408 m/s
-#   222 RPM -> v_max=0.755 m/s   462 RPM -> v_max=1.571 m/s
-# 0.73 m/s paling dekat ke varian 222 RPM (0.755 m/s) -- motor yang
-# terpasang KEMUNGKINAN varian 222 RPM/reduksi 27:1. Asumsi linear PWM->v
-# ini juga belum tentu presis (motor DC biasanya ada deadband di PWM
-# rendah), jadi v_max=0.73 tetap perkiraan, BUKAN hasil ukur langsung.
-MOTOR_V_MAX_MS = 0.73   # m/s, v teoritis di PWM=255 (lihat catatan di atas)
+# ================= KARAKTERISASI MOTOR/RODA (2026-09-14, HASIL TES FISIK) =================
+# Tes lab langsung (bukan lagi perkiraan dari spec motor): jalan 1 meter di
+# PWM=70, 3x percobaan (16.93s, 18.10s, 19.67s) -> rata-rata 18.23s.
+#   v(PWM=70) = 1m / 18.23s = 0.0548 m/s
+#   v_max (PWM=255) = v(70) * 255/70 = 0.0548 * 255/70 ~= 0.1998 m/s
+# INI KOREKSI BESAR dari perkiraan sebelumnya (v_max diduga 0.73 m/s,
+# ternyata angka "0.20 m/s" yang tadinya dikira "v di PWM=70" itu justru
+# lebih dekat ke v_max sebenarnya di PWM=255). Robot jauh lebih lambat dari
+# dugaan awal -- kemungkinan varian motor 43 RPM (v_max teoritis 0.146 m/s,
+# roda 65mm) yang paling dekat, BUKAN 222 RPM seperti dugaan sebelumnya --
+# tapi ini tetap indikasi kasar, bukan kepastian, krn lantai tidak rata
+# (dicatat user saat tes) ikut memperlambat gerak nyata robot.
+MOTOR_V_MAX_MS = 0.1998   # m/s, HASIL UKUR (bukan lagi perkiraan) -- lihat catatan di atas
 
 
 def speed_for_pwm(pwm):

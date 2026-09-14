@@ -44,9 +44,15 @@ from aiohttp import web, WSMsgType, ClientConnectorError
 # diubah lewat sini adalah STRUKTUR/ALGORITMA line-follower itu sendiri
 # (perubahan kode C++ tetap butuh upload ulang seperti biasa).
 #
-# Nilai default di bawah = sama seperti yang sudah divalidasi 2026-09-14
-# di firmware. TURN_AROUND_MS masih PERKIRAAN (900ms) -- update begitu
-# hasil tes fisik (waktu putaran 360 derajat / 2) sudah ada.
+# TURN_AROUND_MS (2026-09-14, hasil tes fisik langsung di lab, bukan lagi
+# perkiraan): 3x putar 180 derajat diukur pakai stopwatch (15.85s, 14.50s,
+# 14.98s) -> rata-rata 15.11s. Cross-check pakai rumus DDMR (v terukur
+# 0.0548 m/s di PWM=70, L=41cm jarak antar roda) hanya memprediksi 11.74s
+# -- robot NYATA ~3.4s lebih lambat dari teori murni, konsisten dengan efek
+# skid/selip (roda bukan omni-wheel) + lantai yang tidak rata (dicatat user).
+# Pakai hasil ukur LANGSUNG (bukan hasil DDMR) krn itu yang paling
+# representasikan perilaku firmware sebenarnya (spin dari diam selama
+# durasi tetap, termasuk semua efek skid/gesekan riil).
 TUNABLE_PARAMS = {
     "SPD_STRAIGHT": 70,            # PWM lurus (S3)
     "SPD_GENTLE_FAST": 70,         # PWM sisi cepat saat koreksi ringan (S2/S4)
@@ -55,7 +61,7 @@ TUNABLE_PARAMS = {
     "SPD_SEARCH_CREEP": 35,        # PWM maju pelan saat garis baru hilang
     "LOST_PHASE1_MS": 300,         # di bawah ini: maju pelan (celah kecil)
     "LOST_GIVEUP_MS": 1000,        # di atas ini: menyerah, mode LOST
-    "TURN_AROUND_MS": 900,         # durasi putar ~180 derajat (PERKIRAAN -- lihat catatan di atas)
+    "TURN_AROUND_MS": 15110,       # durasi putar ~180 derajat -- HASIL UKUR LANGSUNG (lihat catatan di atas)
     "WRONG_NODE_MAX_RETRIES": 3,   # maks percobaan putar-balik sebelum STUCK
 }
 
