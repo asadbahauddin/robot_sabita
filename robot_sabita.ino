@@ -956,6 +956,21 @@ void loop(){
               String rt=jRoute(); bcast(rt);
             }
             onArrived(idx);
+          } else if (nextIdx>=0 && idx==bestR[(stepIdx==0)?(N-1):(stepIdx-1)]) {
+            // Sampai di TETANGGA SEBALIKNYA dari siklus optimal yg sama
+            // (bestR ditempuh arah lain) -- BUKAN kesalahan sungguhan.
+            // Siklus Hamiltonian jarak simetris SELALU punya 2 arah tempuh
+            // dgn total jarak IDENTIK (runACO() yg stokastik gak ada alasan
+            // konsisten pilih salah satu -- bisa beda tiap kali dihitung).
+            // Kalau jalur fisik robot cuma bisa ke arah ini, paksa putar-
+            // balik (spt di bawah) justru SALAH. Fix: balik urutan bestR[]
+            // diam-diam, lanjut normal -- arah berikutnya otomatis
+            // konsisten dgn arah fisik nyata robot mulai dari sini.
+            Serial.printf("ACO arah kebalik (sampai %c, bukan %c yg diharapkan, tapi %c valid di arah lain) -- balik urutan rute\n",
+              NNAME[idx], NNAME[nextIdx], NNAME[idx]);
+            for (int i=0,j=N; i<j; i++,j--) { int tmp=bestR[i]; bestR[i]=bestR[j]; bestR[j]=tmp; }
+            String rt=jRoute(); bcast(rt);
+            onArrived(idx);
           } else if (nextIdx>=0 && idx!=nextIdx) {
             // Sampai di node yg BUKAN direncanakan ACO (nextIdx) -- nyasar
             // ke cabang persimpangan yg salah. JANGAN dianggap kedatangan
