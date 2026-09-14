@@ -26,14 +26,37 @@ import csv
 import os
 from datetime import datetime, timedelta
 
+# ================= KARAKTERISASI MOTOR/RODA (2026-09-14) =================
+# Motor DC Gearbox 24V, 0.3A, tersedia 4 varian RPM (43/120/222/462, reduksi
+# 139:1/50:1/27:1/13:1). Dari CSV uji lapangan (gerakan_robot_uji_coba.csv):
+# kecepatan aktual ~0.20 m/s pada PWM MOTOR_SPEED=70 (dari 255). Asumsi
+# hubungan PWM->kecepatan LINEAR (v = pwm/255 * v_max_teoritis di PWM=255):
+#   v_max = 0.20 / (70/255) = 0.20 * 255/70 ~= 0.73 m/s
+# Dibandingkan v_max teoritis tiap varian (asumsi diameter roda 65mm --
+# CATATAN: ini beda dari roda "4 inch/100mm" yg disebut di percakapan
+# sebelumnya, PERLU DICEK ULANG diameter roda asli pas di lab):
+#   43 RPM  -> v_max=0.146 m/s   120 RPM -> v_max=0.408 m/s
+#   222 RPM -> v_max=0.755 m/s   462 RPM -> v_max=1.571 m/s
+# 0.73 m/s paling dekat ke varian 222 RPM (0.755 m/s) -- motor yang
+# terpasang KEMUNGKINAN varian 222 RPM/reduksi 27:1. Asumsi linear PWM->v
+# ini juga belum tentu presis (motor DC biasanya ada deadband di PWM
+# rendah), jadi v_max=0.73 tetap perkiraan, BUKAN hasil ukur langsung.
+MOTOR_V_MAX_MS = 0.73   # m/s, v teoritis di PWM=255 (lihat catatan di atas)
+
+
+def speed_for_pwm(pwm):
+    """Kecepatan linear robot (m/s) perkiraan pada PWM tertentu (0-255)."""
+    return (pwm / 255.0) * MOTOR_V_MAX_MS
+
+
 # ================= PARAMETER ESTIMASI (bisa diubah) =================
-ROBOT_SPEED_MS    = 0.20   # m/s kecepatan robot
+MOTOR_SPEED       = 70     # PWM base line-follower (identik MOTOR_SPEED default di firmware)
+ROBOT_SPEED_MS    = speed_for_pwm(MOTOR_SPEED)  # m/s kecepatan robot -- ~0.20 m/s pada PWM=70 (lihat karakterisasi di atas)
 AUDIO_DURATION    = 8.5    # detik per audio
 OVERHEAD_PER_NODE = 5.0    # detik overhead QR + berhenti
 NOISE_TRAVEL      = 15.0   # detik rata-rata nyasar (dibagi rata ke tiap edge tempuh)
 
 SENSOR_DT    = 0.05   # detik antar sample sensor simulasi
-MOTOR_SPEED  = 70     # PWM base line-follower (identik MOTOR_SPEED default di firmware)
 
 # ================= TOPOLOGI (hardcode, identik robot_sabita.ino) =================
 NODES = ['A', 'B', 'C', 'D', 'E', 'F']

@@ -34,6 +34,20 @@ const char* AP_PASS = "12345678";
 #define CH_L_RPWM  2
 #define CH_L_LPWM  3
 
+// Motor DC Gearbox 24V 222RPM (kemungkinan -- lihat catatan karakterisasi di
+// bawah), reduksi 27:1.
+// Stall torque: 18 kgfcm, No load torque: 7 kgfcm
+// v_max teoritis: 0.755 m/s (asumsi roda 65mm -- PERLU DICEK ULANG diameter
+// roda asli pas di lab, sempat disebut beda yaitu 4 inch/100mm sebelumnya)
+// v_aktual pada MOTOR_SPEED=70 (dari 255): ~0.20 m/s (dari CSV uji lapangan
+// gerakan_robot_uji_coba.csv)
+//
+// Catatan tuning (2026-09-14):
+// - Stall torque 18 kgfcm cukup buat manuver pivot/spin (motorKanan()/
+//   motorKiri(), termasuk TURN_AROUND_MS di case MOVING).
+// - Arus max 0.3A per motor (total 0.6A kedua motor) -- BTS7960 support
+//   hingga 43A, jauh di atas kebutuhan, tidak ada risiko overcurrent driver.
+// - Motor aman dijalankan PWM 0-255 tanpa overheat.
 int MOTOR_SPEED = 70;   // BASE_SPEED PID (juga dipakai manual drive)
 int LEFT_TRIM   = 0;
 int RIGHT_TRIM  = 0;
