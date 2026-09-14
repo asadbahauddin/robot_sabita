@@ -168,9 +168,24 @@ unsigned long lostSince = 0;   // millis() saat garis pertama kali hilang, 0=lag
 unsigned long turnAroundUntil = 0;  // selagi millis()<ini, motor di-override "putar balik", bukan lineFollow() biasa
 bool turningAround = false;          // true selama proses putar balik (biar bisa kirim ulang state MOVING pas selesai)
 int wrongNodeRetries = 0;            // reset di onArrived() (sukses) & resetPID()
-#define TURN_AROUND_MS 900            // durasi putar ~180 derajat, OPEN-LOOP (tdk ada sensor arah) -- TUNE manual sesuai robot asli
-#define WRONG_NODE_MAX_RETRIES 3      // biar gak puter2 selamanya kalau memang salah terus
 bool stuckWrongNode = false;         // true stlh retry abis -- robot berhenti total, butuh intervensi manual (MANUAL:ON / RESET)
+
+// ===== Parameter gerak yg bisa di-TUNING LIVE lewat WS (TANPA upload ulang
+// firmware) -- lihat handler pesan WS di wsEvent(). Nilai default = sama
+// seperti sebelumnya (dari kode yg sudah divalidasi 2026-09-14), tapi
+// sekarang variabel (bukan #define/literal), supaya sabita_server.py bisa
+// dorong nilai baru kapan saja (termasuk otomatis tiap ESP32 reconnect --
+// lihat TUNABLE_PARAMS di sabita_server.py). Struktur/algoritma line-
+// follower TETAP butuh upload ulang -- ini cuma angka-angkanya.
+int SPD_STRAIGHT     = 70;   // PWM lurus (S3)
+int SPD_GENTLE_FAST  = 70;   // PWM sisi cepat saat koreksi ringan (S2/S4)
+int SPD_GENTLE_SLOW  = 30;   // PWM sisi lambat saat koreksi ringan (S2/S4)
+int SPD_SHARP_SLOW   = 20;   // PWM sisi lambat saat belok tajam (S1/S6) -- sisi cepatnya pakai MOTOR_SPEED (perintah SPEED:)
+int SPD_SEARCH_CREEP = 35;   // PWM maju pelan saat garis baru hilang (< LOST_PHASE1_MS)
+unsigned long LOST_PHASE1_MS = 300;    // di bawah ini sejak garis hilang: maju pelan (mungkin cuma celah kecil)
+unsigned long LOST_GIVEUP_MS = 1000;   // di atas ini: menyerah, mode LOST (berhenti total)
+unsigned long TURN_AROUND_MS = 900;    // durasi putar ~180 derajat, OPEN-LOOP (tdk ada sensor arah) -- HASIL TES FISIK (waktu 360 derajat / 2)
+int WRONG_NODE_MAX_RETRIES   = 3;      // biar gak puter2 selamanya kalau memang salah terus
 
 // Diset true saat QR ter-scan ketika robotState==MOVING (di loop()); dipakai
 // buat pelan-pelan sesaat sebelum sampai node. Direset di onArrived().
@@ -226,13 +241,13 @@ void lineFollow() {
     if (lostSince == 0) lostSince = millis();
     unsigned long lost = millis() - lostSince;
 
-    if (lost < 300) {
+    if (lost < LOST_PHASE1_MS) {
       // Fase 1: maju pelan dulu -- mungkin cuma celah kecil di garis, bukan
       // benar-benar kehilangan jalur.
-      ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,35);
-      ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,35);
-      gSpeedR=35; gSpeedL=35;
-    } else if (lost < 1000) {
+      ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,SPD_SEARCH_CREEP);
+      ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,SPD_SEARCH_CREEP);
+      gSpeedR=SPD_SEARCH_CREEP; gSpeedL=SPD_SEARCH_CREEP;
+    } else if (lost < LOST_GIVEUP_MS) {
       // Fase 2: spin di tempat ke arah terakhir kali garis kelihatan, buat
       // nyari garis lagi. PAKAI motorKiri()/motorKanan() (BUKAN ledcWrite
       // manual dgn asumsi kinematika standar) krn cuma dua fungsi itu yg
@@ -276,29 +291,29 @@ void lineFollow() {
   // cabang) match dgn arah FISIK yg benar.
   if (s3) {
     // Tengah - lurus
-    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,70);
-    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,70);
-    gSpeedR=70; gSpeedL=70;
+    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,SPD_STRAIGHT);
+    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,SPD_STRAIGHT);
+    gSpeedR=SPD_STRAIGHT; gSpeedL=SPD_STRAIGHT;
   } else if (s2) {
     // Agak kiri - koreksi kiri (kiri lebih pelan) -- ditukar dari asumsi awal
-    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,30);
-    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,70);
-    gSpeedR=30; gSpeedL=70;
+    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,SPD_GENTLE_SLOW);
+    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,SPD_GENTLE_FAST);
+    gSpeedR=SPD_GENTLE_SLOW; gSpeedL=SPD_GENTLE_FAST;
   } else if (s4) {
     // Agak kanan - koreksi kanan (kanan lebih pelan) -- ditukar dari asumsi awal
-    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,70);
-    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,30);
-    gSpeedR=70; gSpeedL=30;
+    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,SPD_GENTLE_FAST);
+    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,SPD_GENTLE_SLOW);
+    gSpeedR=SPD_GENTLE_FAST; gSpeedL=SPD_GENTLE_SLOW;
   } else if (s1) {
     // Jauh kiri - belok kiri tajam (TETAP MAJU) -- ditukar dari asumsi awal
-    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,20);
+    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,SPD_SHARP_SLOW);
     ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,MOTOR_SPEED);
-    gSpeedR=20; gSpeedL=MOTOR_SPEED;
+    gSpeedR=SPD_SHARP_SLOW; gSpeedL=MOTOR_SPEED;
   } else if (s6) {
     // Jauh kanan - belok kanan tajam (TETAP MAJU) -- ditukar dari asumsi awal
     ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,MOTOR_SPEED);
-    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,20);
-    gSpeedR=MOTOR_SPEED; gSpeedL=20;
+    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,SPD_SHARP_SLOW);
+    gSpeedR=MOTOR_SPEED; gSpeedL=SPD_SHARP_SLOW;
   }
   // (tidak perlu branch "tidak ada garis" di sini lagi -- sudah ditangani
   // early return di atas sebelum if(s3) ini, dengan recovery fase 1/2.)
@@ -614,6 +629,18 @@ void wsEvent(uint8_t num,WStype_t type,uint8_t* payload,size_t len){
     else if(msg.startsWith("KP:"))     {Kp=msg.substring(3).toFloat();Serial.println("KP="+String(Kp));}
     else if(msg.startsWith("KI:"))     {Ki=msg.substring(3).toFloat();Serial.println("KI="+String(Ki,4));}
     else if(msg.startsWith("KD:"))     {Kd=msg.substring(3).toFloat();Serial.println("KD="+String(Kd));}
+    // ===== Tuning gerak/recovery LIVE (tanpa upload ulang) -- lihat
+    // deklarasi variabel di dekat lineFollow() buat penjelasan tiap satu.
+    // Didorong otomatis oleh sabita_server.py (TUNABLE_PARAMS) tiap connect.
+    else if(msg.startsWith("SPD_STRAIGHT:"))          {SPD_STRAIGHT=msg.substring(13).toInt();Serial.println("SPD_STRAIGHT="+String(SPD_STRAIGHT));}
+    else if(msg.startsWith("SPD_GENTLE_FAST:"))       {SPD_GENTLE_FAST=msg.substring(16).toInt();Serial.println("SPD_GENTLE_FAST="+String(SPD_GENTLE_FAST));}
+    else if(msg.startsWith("SPD_GENTLE_SLOW:"))       {SPD_GENTLE_SLOW=msg.substring(16).toInt();Serial.println("SPD_GENTLE_SLOW="+String(SPD_GENTLE_SLOW));}
+    else if(msg.startsWith("SPD_SHARP_SLOW:"))        {SPD_SHARP_SLOW=msg.substring(15).toInt();Serial.println("SPD_SHARP_SLOW="+String(SPD_SHARP_SLOW));}
+    else if(msg.startsWith("SPD_SEARCH_CREEP:"))      {SPD_SEARCH_CREEP=msg.substring(17).toInt();Serial.println("SPD_SEARCH_CREEP="+String(SPD_SEARCH_CREEP));}
+    else if(msg.startsWith("LOST_PHASE1_MS:"))        {LOST_PHASE1_MS=msg.substring(15).toInt();Serial.println("LOST_PHASE1_MS="+String(LOST_PHASE1_MS));}
+    else if(msg.startsWith("LOST_GIVEUP_MS:"))        {LOST_GIVEUP_MS=msg.substring(15).toInt();Serial.println("LOST_GIVEUP_MS="+String(LOST_GIVEUP_MS));}
+    else if(msg.startsWith("TURN_AROUND_MS:"))        {TURN_AROUND_MS=msg.substring(15).toInt();Serial.println("TURN_AROUND_MS="+String(TURN_AROUND_MS));}
+    else if(msg.startsWith("WRONG_NODE_MAX_RETRIES:")){WRONG_NODE_MAX_RETRIES=msg.substring(23).toInt();Serial.println("WRONG_NODE_MAX_RETRIES="+String(WRONG_NODE_MAX_RETRIES));}
   }
 }
 

@@ -32,6 +32,33 @@ from datetime import datetime
 import websockets
 from aiohttp import web, WSMsgType, ClientConnectorError
 
+# ============================================================
+#  PARAMETER GERAK ROBOT (TUNING LIVE -- TANPA UPLOAD ULANG ESP32)
+# ============================================================
+# Edit angka di bawah ini & restart server -- OTOMATIS dikirim ke ESP32
+# (sbg perintah "KEY:value" lewat WebSocket, sama seperti SPEED:/LTRIM:
+# yang sudah ada) tiap kali koneksi ke ESP32 terbentuk/reconnect (lihat
+# esp_link_task()), jadi TIDAK PERLU colok USB & upload firmware lagi
+# cuma buat ganti angka-angka ini. Firmware sudah punya handler buat
+# tiap key ini (lihat wsEvent() di robot_sabita.ino) -- yang TIDAK bisa
+# diubah lewat sini adalah STRUKTUR/ALGORITMA line-follower itu sendiri
+# (perubahan kode C++ tetap butuh upload ulang seperti biasa).
+#
+# Nilai default di bawah = sama seperti yang sudah divalidasi 2026-09-14
+# di firmware. TURN_AROUND_MS masih PERKIRAAN (900ms) -- update begitu
+# hasil tes fisik (waktu putaran 360 derajat / 2) sudah ada.
+TUNABLE_PARAMS = {
+    "SPD_STRAIGHT": 70,            # PWM lurus (S3)
+    "SPD_GENTLE_FAST": 70,         # PWM sisi cepat saat koreksi ringan (S2/S4)
+    "SPD_GENTLE_SLOW": 30,         # PWM sisi lambat saat koreksi ringan (S2/S4)
+    "SPD_SHARP_SLOW": 20,          # PWM sisi lambat saat belok tajam (S1/S6)
+    "SPD_SEARCH_CREEP": 35,        # PWM maju pelan saat garis baru hilang
+    "LOST_PHASE1_MS": 300,         # di bawah ini: maju pelan (celah kecil)
+    "LOST_GIVEUP_MS": 1000,        # di atas ini: menyerah, mode LOST
+    "TURN_AROUND_MS": 900,         # durasi putar ~180 derajat (PERKIRAAN -- lihat catatan di atas)
+    "WRONG_NODE_MAX_RETRIES": 3,   # maks percobaan putar-balik sebelum STUCK
+}
+
 SENSOR_CSV_FIELDS = [
     "recv_iso", "t_rel_s", "state", "nav_prev", "nav_curr", "nav_next", "nav_step",
     "s1", "s2", "s3", "s4", "s6",
@@ -166,6 +193,13 @@ async def esp_link_task(hub: Hub):
                 hub.esp_ws = wsconn
                 hub.esp_connected = True
                 print("[esp] TERHUBUNG.")
+                # Dorong parameter tuning (TUNABLE_PARAMS di atas) tiap kali
+                # baru connect/reconnect -- ESP32 tidak menyimpan nilai ini
+                # permanen (reset ke default firmware tiap power-cycle), jadi
+                # ini menggantikan perlunya upload ulang ATAU input manual
+                # ulang tiap kali robot dinyalakan lagi.
+                for key, val in TUNABLE_PARAMS.items():
+                    await hub.send_to_esp(f"{key}:{val}")
                 await hub.broadcast_to_browsers({"type": "esplink", "connected": True})
 
                 async for raw in wsconn:
