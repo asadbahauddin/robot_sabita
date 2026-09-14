@@ -68,16 +68,29 @@ TUNABLE_PARAMS = {
     # GEOTURN:0 di sini buat matikan cepat kalau ternyata meleset di lapangan,
     # TANPA reflash.
     #
-    # FIX 2026-09-15: awalnya belokan dieksekusi LANGSUNG begitu MOVING
+    # FIX 2026-09-15 (a): awalnya belokan dieksekusi LANGSUNG begitu MOVING
     # mulai (pakai timer dari keberangkatan) -- ternyata salah, karena
     # persimpangan fisiknya ada DI TENGAH perjalanan, bukan di titik
     # berangkat, jadi robot kepalang lanjut ke jalur lain sebelum benar-
     # benar sampai persimpangan yg dimaksud. Sekarang belokan cuma
     # DIJADWALKAN (arah+durasi) & baru DIEKSEKUSI begitu sensor BENAR2
-    # mendeteksi persimpangan (>=3 sensor hitam) di tengah jalan --
-    # GEO_TURN_ARM_MS mencegah itu kepicu oleh zona node yg baru saja
-    # ditinggalkan (yg juga >=3 sensor hitam sesaat setelah berangkat).
-    "GEOTURN": 1,                  # 1=aktif, 0=nonaktif (fallback ke line-follower biasa)
+    # mendeteksi persimpangan di tengah jalan -- GEO_TURN_ARM_MS mencegah
+    # itu kepicu oleh zona node yg baru saja ditinggalkan.
+    #
+    # FIX 2026-09-15 (b): kejadian nyata di lapangan (hampir_berhsil.csv,
+    # segmen E->A->B) -- geo-turn kepicu ~73 derajat & robot kehilangan
+    # garis total, padahal transisi antar node PINGGIR (gak menyentuh F)
+    # seharusnya SELALU lurus (dikonfirmasi user). Dua penyebab, DUA-
+    # duanya sudah diperbaiki di firmware: (1) computeGeoTurn() sekarang
+    # cuma menjadwalkan belokan kalau transisi menyentuh F (hub tengah),
+    # (2) trigger persimpangan diperketat dari ">=3 sensor hitam" (kebukti
+    # ikut kepicu tikungan wajar) jadi "S1 DAN S6 dua-duanya hitam"
+    # (marka lebar sungguhan, bukan tikungan biasa).
+    #
+    # GEOTURN:0 di bawah ini SENGAJA dimatikan dulu (instruksi user
+    # 2026-09-15) sampai fix di atas selesai diuji fisik -- nyalakan lagi
+    # manual (GEOTURN:1, tanpa reflash) begitu siap tes ulang.
+    "GEOTURN": 0,                  # 1=aktif, 0=nonaktif (fallback ke line-follower biasa) -- MATI DULU, lihat catatan di atas
     "GEO_TURN_MIN_DEG": 20,        # di bawah sudut ini (hampir lurus) gak usah belok terjadwal
     "GEO_TURN_ARM_MS": 400,        # minimal waktu di jalur normal sblm trigger persimpangan boleh nyala
 }

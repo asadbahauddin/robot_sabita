@@ -82,6 +82,7 @@ int  curVol       = 18;
 WebSocketsServer ws(81);
 
 #define N 6
+#define F_IDX 5  // indeks 'F' di NNAME[] -- F = hub tengah graf pameran, dipakai computeGeoTurn()
 const char  NNAME[N]  = {'A','B','C','D','E','F'};
 const char* NART[N]   = {"Mona Lisa","The Scream","The Kiss","Starry Night","Sunflowers","Guernica"};
 const char* NDESC[N]  = {
@@ -212,11 +213,12 @@ bool stuckWrongNode = false;         // true stlh retry abis -- robot berhenti t
 // perjalanan menuju node berikutnya, bukan tepat di titik keberangkatan,
 // jadi timer dari keberangkatan keburu habis sebelum robot benar2 sampai
 // di persimpangan yg dimaksud). Sekarang: arah+durasi dihitung & DITUNGGU
-// (geoTurnPending) sampai sensor BENAR2 mendeteksi persimpangan (>=3
-// sensor hitam sekaligus) -- baru dieksekusi (geoTurnUntil). Supaya tidak
-// kepicu oleh zona node yg BARU SAJA ditinggalkan (yg juga >=3 sensor
-// hitam), trigger baru "diarm" (geoTurnArmed) setelah robot kelihatan
-// bener2 di jalur normal (bkn persimpangan) selama >= GEO_TURN_ARM_MS.
+// (geoTurnPending) sampai sensor BENAR2 mendeteksi persimpangan (S1 DAN
+// S6 dua-duanya hitam -- lihat catatan koreksi 2026-09-15 di blok trigger
+// di loop()) -- baru dieksekusi (geoTurnUntil). Supaya tidak kepicu oleh
+// zona node yg BARU SAJA ditinggalkan (yg juga kena pola serupa), trigger
+// baru "diarm" (geoTurnArmed) setelah robot kelihatan bener2 di jalur
+// normal (bkn persimpangan) selama >= GEO_TURN_ARM_MS.
 unsigned long geoTurnUntil = 0;   // selagi millis()<ini, motor di-override belok terjadwal (bukan lineFollow() biasa)
 int geoTurnDir = 0;               // +1=kanan(motorKanan), -1=kiri(motorKiri), 0=tidak ada belok terjadwal
 bool geoTurnPending = false;      // true = ada belokan terjadwal, NUNGGU persimpangan fisik terdeteksi
@@ -282,6 +284,12 @@ void computeGeoTurn(){
   geoTurnPending = false; geoTurnArmed = false; geoTurnClearSince = 0;
   if (!ENABLE_GEO_TURN) return;
   if (prevIdx < 0 || nextIdx < 0) return;
+  // KOREKSI 2026-09-15 (dari kejadian nyata di lapangan -- E->A->B kepicu
+  // belok ~73 derajat & robot kehilangan garis total): transisi antar node
+  // PINGGIR (gak menyentuh F sama sekali) SELALU lurus secara fisik --
+  // dikonfirmasi user. Belok terjadwal CUMA relevan kalau transisi ini
+  // menyentuh F (baru datang dari F, lagi DI F, atau mau ke F).
+  if (prevIdx != F_IDX && currIdx != F_IDX && nextIdx != F_IDX) return;
   float vinX  = POS_X[currIdx]-POS_X[prevIdx], vinY  = POS_Y[currIdx]-POS_Y[prevIdx];
   float voutX = POS_X[nextIdx]-POS_X[currIdx], voutY = POS_Y[nextIdx]-POS_Y[currIdx];
   float cross = vinX*voutY - vinY*voutX;
@@ -782,8 +790,15 @@ void loop(){
     // yg BARU SAJA ditinggalkan (juga >=3 sensor hitam) tidak langsung
     // memicu belokan sebelum robot benar2 berangkat.
     if (geoTurnPending) {
-      int hitCount = (s1==0)+(s2==0)+(s3==0)+(s4==0)+(s6==0);
-      if (hitCount >= 3) {
+      // KOREKSI 2026-09-15: "hitCount>=3" kebukti terlalu longgar di
+      // lapangan -- pola S3+S4+S6 (tikungan wajar ke kanan, BUKAN
+      // persimpangan lebar sungguhan) ikut kepicu, robot jadi kehilangan
+      // garis total. Persimpangan fisik yg sungguhan (marka lebar)
+      // seharusnya kena di KEDUA sensor ujung (S1 & S6) sekaligus --
+      // tikungan biasa (sekencang apa pun) cuma narik salah satu sisi,
+      // gak pernah dua-duanya bareng.
+      bool persimpangan = (s1==0) && (s6==0);
+      if (persimpangan) {
         if (geoTurnArmed) {
           // Persimpangan BERIKUTNYA (bukan zona keberangkatan sendiri) -- picu!
           geoTurnPending = false; geoTurnArmed = false; geoTurnClearSince = 0;
