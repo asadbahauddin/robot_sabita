@@ -344,6 +344,20 @@ def make_app(hub: Hub, dashboard_path, remote_path):
     return app
 
 
+def get_lan_ip():
+    # "Connect" UDP ke alamat luar (gak benar2 kirim paket) cuma buat OS
+    # pilihkan interface/IP LAN yang aktif.
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
 async def main_async(args):
     here = os.path.dirname(os.path.abspath(__file__))
     dashboard_path = os.path.join(here, "dashboard.html")
@@ -369,6 +383,7 @@ async def main_async(args):
     site = web.TCPSite(runner, "0.0.0.0", args.port)
     await site.start()
     print(f"[http] dashboard di http://localhost:{args.port}")
+    print(f"http://{get_lan_ip()}:{args.port}/remote")
 
     esp_task = asyncio.create_task(esp_link_task(hub))
 
