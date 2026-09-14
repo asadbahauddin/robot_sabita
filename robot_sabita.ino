@@ -158,7 +158,8 @@ String prevMode  = "";  // buat deteksi transisi mode -- broadcast cuma pas beru
 int gSpeedR = 0, gSpeedL = 0;  // PWM motor R/L TERAKHIR yg BENAR2 dikirim ledcWrite()
 
 // Recovery saat garis hilang total (semua sensor putih) -- lihat lineFollow().
-int lastTurnDir = 0;          // -1=terakhir belok/koreksi kiri, 0=lurus, +1=kanan
+// Arah cari SELALU kanan (motorKanan(), lihat lineFollow()) -- tidak lagi
+// menebak dari riwayat belok terakhir, jadi tidak perlu variabel "lastTurnDir".
 unsigned long lostSince = 0;   // millis() saat garis pertama kali hilang, 0=lagi tidak hilang
 
 // "Salah node" (nyasar ke cabang persimpangan yg salah) -- lihat loop()/case
@@ -195,7 +196,6 @@ bool  approaching_node = false;
 
 void resetPID(){
   gLastMode = "OFF";
-  lastTurnDir = 0;
   lostSince = 0;
   turnAroundUntil = 0;
   turningAround = false;
@@ -227,14 +227,6 @@ void lineFollow() {
 
   gLastMode = "BANGBANG";
 
-  // --- Hitung lastTurnDir di tiap kondisi (dipakai buat nentuin arah spin
-  // pas garis hilang total di bawah) -- diupdate SEBELUM dicek "tidak ada
-  // garis" supaya begitu itu terjadi (s1..s6 semua 0), nilainya sudah
-  // menyimpan arah TERAKHIR KALI garis masih kelihatan, bukan ke-reset. ---
-  if (s2 || s1) lastTurnDir = -1;      // terakhir kiri
-  if (s4 || s6) lastTurnDir = +1;      // terakhir kanan
-  if (s3 && !s2 && !s4) lastTurnDir = 0;  // lurus
-
   // --- Tidak ada garis sama sekali: recovery, bukan cuma jalan lurus terus
   // (bug lama: robot keluar jalur & gak pernah balik krn cuma maju 40/40). ---
   if (!s1 && !s2 && !s3 && !s4 && !s6) {
@@ -248,20 +240,17 @@ void lineFollow() {
       ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,SPD_SEARCH_CREEP);
       gSpeedR=SPD_SEARCH_CREEP; gSpeedL=SPD_SEARCH_CREEP;
     } else if (lost < LOST_GIVEUP_MS) {
-      // Fase 2: spin di tempat ke arah terakhir kali garis kelihatan, buat
-      // nyari garis lagi. PAKAI motorKiri()/motorKanan() (BUKAN ledcWrite
-      // manual dgn asumsi kinematika standar) krn cuma dua fungsi itu yg
-      // sudah divalidasi FISIK LANGSUNG arahnya benar -- channel CH_R_*/
-      // CH_L_* tertukar dari label kanan/kiri fisik robot (lihat catatan di
-      // bawah), jadi menulis ulang pola ledcWrite manual di sini gampang
-      // kebalik lagi.
-      if (lastTurnDir <= 0) {
-        motorKiri();
-        gSpeedR=-MOTOR_SPEED; gSpeedL=MOTOR_SPEED;
-      } else {
-        motorKanan();
-        gSpeedR=MOTOR_SPEED; gSpeedL=-MOTOR_SPEED;
-      }
+      // Fase 2: garis hilang total -- SELALU cari ke KANAN (bukan nebak dari
+      // lastTurnDir lagi, sesuai instruksi user 2026-09-14: "robot tidak
+      // mungkin kebalik arahnya" -- satu arah tetap, jadi deterministik,
+      // tidak tergantung riwayat belok sebelumnya yg bisa salah tebak).
+      // PAKAI motorKanan() (BUKAN ledcWrite manual dgn asumsi kinematika
+      // standar) krn fungsi ini yg sudah divalidasi FISIK LANGSUNG arahnya
+      // benar -- channel CH_R_*/CH_L_* tertukar dari label kanan/kiri fisik
+      // robot (lihat catatan di bawah), jadi menulis ulang pola ledcWrite
+      // manual di sini gampang kebalik lagi.
+      motorKanan();
+      gSpeedR=MOTOR_SPEED; gSpeedL=-MOTOR_SPEED;
     } else {
       // Fase 3: 1 detik total sudah lewat & garis tetap tidak ketemu --
       // MENYERAH, berhenti total (bukan spin selamanya) & lapor mode "LOST"
