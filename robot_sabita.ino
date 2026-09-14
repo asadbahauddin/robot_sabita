@@ -183,8 +183,7 @@ int SPD_GENTLE_FAST  = 70;   // PWM sisi cepat saat koreksi ringan (S2/S4)
 int SPD_GENTLE_SLOW  = 30;   // PWM sisi lambat saat koreksi ringan (S2/S4)
 int SPD_SHARP_SLOW   = 20;   // PWM sisi lambat saat belok tajam (S1/S6) -- sisi cepatnya pakai MOTOR_SPEED (perintah SPEED:)
 int SPD_SEARCH_CREEP = 35;   // PWM maju pelan saat garis baru hilang (< LOST_PHASE1_MS)
-unsigned long LOST_PHASE1_MS = 300;    // di bawah ini sejak garis hilang: maju pelan (mungkin cuma celah kecil)
-unsigned long LOST_GIVEUP_MS = 1000;   // di atas ini: menyerah, mode LOST (berhenti total)
+unsigned long LOST_PHASE1_MS = 300;    // di bawah ini sejak garis hilang: maju pelan (mungkin cuma celah kecil); di atasnya: cari ke kanan TANPA BATAS WAKTU
 unsigned long TURN_AROUND_MS = 900;    // durasi putar ~180 derajat, OPEN-LOOP (tdk ada sensor arah) -- HASIL TES FISIK (waktu 360 derajat / 2)
 int WRONG_NODE_MAX_RETRIES   = 3;      // biar gak puter2 selamanya kalau memang salah terus
 
@@ -239,28 +238,22 @@ void lineFollow() {
       ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,SPD_SEARCH_CREEP);
       ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,SPD_SEARCH_CREEP);
       gSpeedR=SPD_SEARCH_CREEP; gSpeedL=SPD_SEARCH_CREEP;
-    } else if (lost < LOST_GIVEUP_MS) {
+    } else {
       // Fase 2: garis hilang total -- SELALU cari ke KANAN (bukan nebak dari
       // lastTurnDir lagi, sesuai instruksi user 2026-09-14: "robot tidak
       // mungkin kebalik arahnya" -- satu arah tetap, jadi deterministik,
       // tidak tergantung riwayat belok sebelumnya yg bisa salah tebak).
-      // PAKAI motorKanan() (BUKAN ledcWrite manual dgn asumsi kinematika
-      // standar) krn fungsi ini yg sudah divalidasi FISIK LANGSUNG arahnya
-      // benar -- channel CH_R_*/CH_L_* tertukar dari label kanan/kiri fisik
-      // robot (lihat catatan di bawah), jadi menulis ulang pola ledcWrite
-      // manual di sini gampang kebalik lagi.
+      // TIDAK ADA BATAS WAKTU menyerah lagi (fase "LOST"/berhenti total
+      // sudah DIHAPUS sesuai instruksi user 2026-09-14: "putar sampai
+      // ketemu garis") -- robot spin ke kanan TERUS sampai garis
+      // benar-benar ketemu lagi, seberapa pun lama. PAKAI motorKanan()
+      // (BUKAN ledcWrite manual dgn asumsi kinematika standar) krn fungsi
+      // ini yg sudah divalidasi FISIK LANGSUNG arahnya benar -- channel
+      // CH_R_*/CH_L_* tertukar dari label kanan/kiri fisik robot (lihat
+      // catatan di bawah), jadi menulis ulang pola ledcWrite manual di
+      // sini gampang kebalik lagi.
       motorKanan();
       gSpeedR=MOTOR_SPEED; gSpeedL=-MOTOR_SPEED;
-    } else {
-      // Fase 3: 1 detik total sudah lewat & garis tetap tidak ketemu --
-      // MENYERAH, berhenti total (bukan spin selamanya) & lapor mode "LOST"
-      // ke dashboard/CSV (field mode & riwayat transisi pidmode) supaya
-      // operator tahu harus intervensi manual. Kalau robot digeser balik ke
-      // atas garis (manual/tangan), baris "lostSince=0" di bawah otomatis
-      // pulih ke BANGBANG normal lagi tanpa perlu reset apa pun.
-      motorStop();
-      gSpeedR=0; gSpeedL=0;
-      gLastMode="LOST";
     }
     reportPidMode();
     return;
@@ -627,7 +620,6 @@ void wsEvent(uint8_t num,WStype_t type,uint8_t* payload,size_t len){
     else if(msg.startsWith("SPD_SHARP_SLOW:"))        {SPD_SHARP_SLOW=msg.substring(15).toInt();Serial.println("SPD_SHARP_SLOW="+String(SPD_SHARP_SLOW));}
     else if(msg.startsWith("SPD_SEARCH_CREEP:"))      {SPD_SEARCH_CREEP=msg.substring(17).toInt();Serial.println("SPD_SEARCH_CREEP="+String(SPD_SEARCH_CREEP));}
     else if(msg.startsWith("LOST_PHASE1_MS:"))        {LOST_PHASE1_MS=msg.substring(15).toInt();Serial.println("LOST_PHASE1_MS="+String(LOST_PHASE1_MS));}
-    else if(msg.startsWith("LOST_GIVEUP_MS:"))        {LOST_GIVEUP_MS=msg.substring(15).toInt();Serial.println("LOST_GIVEUP_MS="+String(LOST_GIVEUP_MS));}
     else if(msg.startsWith("TURN_AROUND_MS:"))        {TURN_AROUND_MS=msg.substring(15).toInt();Serial.println("TURN_AROUND_MS="+String(TURN_AROUND_MS));}
     else if(msg.startsWith("WRONG_NODE_MAX_RETRIES:")){WRONG_NODE_MAX_RETRIES=msg.substring(23).toInt();Serial.println("WRONG_NODE_MAX_RETRIES="+String(WRONG_NODE_MAX_RETRIES));}
   }

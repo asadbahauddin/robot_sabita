@@ -59,8 +59,7 @@ TUNABLE_PARAMS = {
     "SPD_GENTLE_SLOW": 30,         # PWM sisi lambat saat koreksi ringan (S2/S4)
     "SPD_SHARP_SLOW": 20,          # PWM sisi lambat saat belok tajam (S1/S6)
     "SPD_SEARCH_CREEP": 35,        # PWM maju pelan saat garis baru hilang
-    "LOST_PHASE1_MS": 300,         # di bawah ini: maju pelan (celah kecil)
-    "LOST_GIVEUP_MS": 1000,        # di atas ini: menyerah, mode LOST
+    "LOST_PHASE1_MS": 300,         # di bawah ini: maju pelan (celah kecil); di atasnya: cari ke kanan TANPA BATAS WAKTU (fase "menyerah/LOST" sudah dihapus 2026-09-14 atas permintaan user)
     "TURN_AROUND_MS": 15110,       # durasi putar ~180 derajat -- HASIL UKUR LANGSUNG (lihat catatan di atas)
     "WRONG_NODE_MAX_RETRIES": 3,   # maks percobaan putar-balik sebelum STUCK
 }
