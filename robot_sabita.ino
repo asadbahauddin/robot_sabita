@@ -203,7 +203,7 @@ void lineFollow() {
       ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,35);
       ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,35);
       gSpeedR=35; gSpeedL=35;
-    } else {
+    } else if (lost < 1000) {
       // Fase 2: spin di tempat ke arah terakhir kali garis kelihatan, buat
       // nyari garis lagi. PAKAI motorKiri()/motorKanan() (BUKAN ledcWrite
       // manual dgn asumsi kinematika standar) krn cuma dua fungsi itu yg
@@ -218,6 +218,16 @@ void lineFollow() {
         motorKanan();
         gSpeedR=MOTOR_SPEED; gSpeedL=-MOTOR_SPEED;
       }
+    } else {
+      // Fase 3: 1 detik total sudah lewat & garis tetap tidak ketemu --
+      // MENYERAH, berhenti total (bukan spin selamanya) & lapor mode "LOST"
+      // ke dashboard/CSV (field mode & riwayat transisi pidmode) supaya
+      // operator tahu harus intervensi manual. Kalau robot digeser balik ke
+      // atas garis (manual/tangan), baris "lostSince=0" di bawah otomatis
+      // pulih ke BANGBANG normal lagi tanpa perlu reset apa pun.
+      motorStop();
+      gSpeedR=0; gSpeedL=0;
+      gLastMode="LOST";
     }
     reportPidMode();
     return;
