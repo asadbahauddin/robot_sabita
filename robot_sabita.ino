@@ -203,6 +203,16 @@ bool turningAround = false;          // true selama proses putar balik (biar bis
 int wrongNodeRetries = 0;            // reset di onArrived() (sukses) & resetPID()
 bool stuckWrongNode = false;         // true stlh retry abis -- robot berhenti total, butuh intervensi manual (MANUAL:ON / RESET)
 
+// "Nudge" manual TANPA masuk mode manual penuh (instruksi user 2026-09-15):
+// operator bisa tekan tombol panah di dashboard (M:MAJU/M:MUNDUR/M:KIRI/
+// M:KANAN, TANPA klik "Aktifkan Mode Manual" dulu) sambil robot MASIH
+// MOVING otomatis, buat koreksi arah langsung begitu lihat robot mulai
+// salah -- lebih andal drpd nunggu geo-turn/wrong-node otomatis yg
+// modelnya blm tentu pas sama kondisi fisik. Sensor QR/FSM/audio TETAP
+// jalan normal di belakang layar -- ini cuma override motor sementara.
+bool userNudge = false;   // true selama tombol ditekan (M:STOP saat dilepas -> false lagi)
+int userNudgeDir = 0;     // 1=maju, -1=mundur, 2=kanan, -2=kiri, 0=tidak ada nudge
+
 // Belok terjadwal di persimpangan, dihitung dari geometri Graf Pameran
 // (POS_X/POS_Y) begitu MOVING dimulai -- lihat computeGeoTurn(). TAMBAHAN,
 // bukan pengganti line-follower/recovery yg sudah ada (instruksi user
@@ -264,6 +274,8 @@ void resetPID(){
   geoTurnArmed = false;
   geoTurnClearSince = 0;
   geoTurnDurationMs = 0;
+  userNudge = false;
+  userNudgeDir = 0;
 }
 
 // Belok terjadwal di persimpangan, dihitung dari geometri Graf Pameran
@@ -302,6 +314,29 @@ void computeGeoTurn(){
   Serial.printf("GeoTurn dijadwalkan %c->%c->%c: sudut=%.1f derajat, arah=%s, durasi=%lums (nunggu persimpangan)\n",
     NNAME[prevIdx], NNAME[currIdx], NNAME[nextIdx], angleDeg,
     geoTurnDir>0?"KANAN":"KIRI", geoTurnDurationMs);
+}
+
+// "Nudge" manual dari operator (M:MAJU/M:MUNDUR/M:KIRI/M:KANAN) SELAGI
+// robotState==MOVING & manualMode==false -- lihat deklarasi userNudge di
+// atas. Membatalkan SEMUA override otomatis yg lagi jalan/nunggu (koreksi
+// manusia menang), drive motor LANGSUNG sekali (loop() cuma menjaga biar
+// lineFollow()/dll tidak menimpa tiap iterasi selama tombol masih
+// ditekan -- lihat blok userNudge di loop()). dir: 1=maju, -1=mundur,
+// 2=kanan, -2=kiri.
+void startNudge(int dir){
+  userNudge = true;
+  userNudgeDir = dir;
+  turnAroundUntil = 0; turningAround = false;
+  geoTurnPending = false; geoTurnUntil = 0; geoTurnArmed = false; geoTurnClearSince = 0;
+  stuckWrongNode = false; wrongNodeRetries = 0;
+  gLastMode = "NUDGE";
+  switch (dir) {
+    case  1: motorMaju();   gSpeedR=MOTOR_SPEED+RIGHT_TRIM;    gSpeedL=MOTOR_SPEED+LEFT_TRIM;    break;
+    case -1: motorMundur(); gSpeedR=-(MOTOR_SPEED+RIGHT_TRIM); gSpeedL=-(MOTOR_SPEED+LEFT_TRIM); break;
+    case  2: motorKanan();  gSpeedR=MOTOR_SPEED;  gSpeedL=-MOTOR_SPEED; break;
+    case -2: motorKiri();   gSpeedR=-MOTOR_SPEED; gSpeedL=MOTOR_SPEED;  break;
+  }
+  reportPidMode();
 }
 
 // Broadcast transisi mode ke dashboard/CSV secara real-time -- cuma kirim
@@ -683,11 +718,11 @@ void wsEvent(uint8_t num,WStype_t type,uint8_t* payload,size_t len){
       resetAll();
       Serial.println("Mode manual nonaktif - siap scan QR");
     }
-    else if(msg=="M:MAJU")     { if(manualMode) motorMaju(); }
-    else if(msg=="M:MUNDUR")   { if(manualMode) motorMundur(); }
-    else if(msg=="M:KIRI")     { if(manualMode) motorKiri(); }
-    else if(msg=="M:KANAN")    { if(manualMode) motorKanan(); }
-    else if(msg=="M:STOP")     { motorStop(); }
+    else if(msg=="M:MAJU")     { if(manualMode) motorMaju();   else if(robotState==MOVING) startNudge(1);  }
+    else if(msg=="M:MUNDUR")   { if(manualMode) motorMundur(); else if(robotState==MOVING) startNudge(-1); }
+    else if(msg=="M:KIRI")     { if(manualMode) motorKiri();   else if(robotState==MOVING) startNudge(-2); }
+    else if(msg=="M:KANAN")    { if(manualMode) motorKanan();  else if(robotState==MOVING) startNudge(2);  }
+    else if(msg=="M:STOP")     { motorStop(); userNudge=false; userNudgeDir=0; }
     else if(msg=="TEST:LINEFOLLOW") {
       // Paksa robot line-follow (PID) TANPA perlu QR sama sekali -- buat tes
       // tuning PID independen dari status GM67/QR.
@@ -814,7 +849,14 @@ void loop(){
       }
     }
 
-    if (stuckWrongNode) {
+    if (userNudge) {
+      // Operator lagi koreksi manual pakai tombol panah (M:MAJU/MUNDUR/
+      // KIRI/KANAN dikirim di startNudge(), motor sudah didrive langsung
+      // di situ) -- PALING PRIORITAS drpd override otomatis lain. Di sini
+      // cuma jaga supaya lineFollow()/dll TIDAK menimpa tiap loop()
+      // iterasi selama tombol masih ditekan (M:STOP saat dilepas ->
+      // userNudge=false lagi, lihat wsEvent()).
+    } else if (stuckWrongNode) {
       // Sudah gagal WRONG_NODE_MAX_RETRIES kali -- menyerah, berhenti total
       // (bukan coba lagi selamanya), butuh intervensi manual.
       motorStop();
