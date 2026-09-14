@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>SABITA Remote</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent;
+    -webkit-user-select:none; user-select:none; touch-action:none; }
+html,body { width:100%; height:100%; overflow:hidden; background:#0f1117; font-family:'Segoe UI',sans-serif; }
+.wrap { display:flex; width:100vw; height:100vh; }
+.btn { flex:1; display:flex; align-items:center; justify-content:center;
+       color:#fff; transition:filter .08s, transform .08s; }
+.btn.active { filter:brightness(1.35); transform:scale(0.98); }
+#kiri  { background:#f59e0b; }
+#kanan { background:#2563eb; }
+.arrow { font-size:min(28vw,180px); line-height:1; font-weight:900; }
+#status { position:fixed; top:10px; left:50%; transform:translateX(-50%);
+          width:14px; height:14px; border-radius:50%; background:#ef4444; z-index:10;
+          box-shadow:0 0 0 3px rgba(0,0,0,.25); }
+#status.on { background:#22c55e; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="btn" id="kiri"><span class="arrow">&#8592;</span></div>
+  <div class="btn" id="kanan"><span class="arrow">&#8594;</span></div>
+</div>
+<div id="status"></div>
+<script>
+// Remote koreksi arah khusus HP -- CUMA dua tombol KIRI/KANAN full layar,
+// dipakai operator buat nudge robot (lihat startNudge() di firmware)
+// SELAGI robot masih MOVING otomatis, tanpa perlu lihat layar detail.
+// Dashboard lengkap (grafik, dll) tetap di laptop terpisah -- keduanya
+// connect ke WebSocket /ws yang SAMA di sabita_server.py.
+let ws, retryTimer;
+function connect(){
+  ws = new WebSocket('ws://'+location.host+'/ws');
+  ws.onopen = ()=>{ document.getElementById('status').classList.add('on'); clearInterval(retryTimer); };
+  ws.onclose = ()=>{ document.getElementById('status').classList.remove('on');
+    retryTimer=setInterval(connect,1500); };
+  ws.onerror = ()=>{};
+}
+function send(m){ if(ws && ws.readyState===1) ws.send(m); }
+
+function bind(id, cmd){
+  const el = document.getElementById(id);
+  const start = e=>{ e.preventDefault(); el.classList.add('active'); send('M:'+cmd); };
+  const stop  = e=>{ e.preventDefault(); el.classList.remove('active'); send('M:STOP'); };
+  el.addEventListener('touchstart', start, {passive:false});
+  el.addEventListener('touchend', stop, {passive:false});
+  el.addEventListener('touchcancel', stop, {passive:false});
+  el.addEventListener('mousedown', start);
+  el.addEventListener('mouseup', stop);
+  el.addEventListener('mouseleave', stop);
+}
+bind('kiri','KIRI');
+bind('kanan','KANAN');
+connect();
+
+document.addEventListener('touchmove', e=>e.preventDefault(), {passive:false});
+document.addEventListener('contextmenu', e=>e.preventDefault());
+</script>
+</body>
+</html>

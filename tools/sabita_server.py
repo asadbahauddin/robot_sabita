@@ -266,10 +266,17 @@ async def esp_link_task(hub: Hub):
 # ============================================================
 #  HTTP + WEBSOCKET SERVER (aiohttp) UNTUK BROWSER
 # ============================================================
-def make_app(hub: Hub, dashboard_path):
+def make_app(hub: Hub, dashboard_path, remote_path):
 
     async def handle_index(request):
         return web.FileResponse(dashboard_path)
+
+    async def handle_remote(request):
+        # Halaman KHUSUS HP: cuma 2 tombol KIRI/KANAN full layar, buat
+        # koreksi arah cepat (nudge, lihat startNudge() di firmware) tanpa
+        # perlu lihat layar detail -- dashboard lengkap (grafik dll) tetap
+        # di laptop terpisah (route "/"), keduanya pakai WS /ws yang sama.
+        return web.FileResponse(remote_path)
 
     async def handle_ws(request):
         wsres = web.WebSocketResponse(heartbeat=15)
@@ -331,9 +338,26 @@ def make_app(hub: Hub, dashboard_path):
 
     app = web.Application()
     app.router.add_get("/", handle_index)
+    app.router.add_get("/remote", handle_remote)
     app.router.add_get("/ws", handle_ws)
     app.router.add_get("/download-log", handle_download_log)
     return app
+
+
+def get_lan_ip():
+    # Trik umum: "connect" UDP ke alamat luar (gak benar2 kirim paket) cuma
+    # buat OS pilihkan interface/IP LAN yang aktif -- dipakai supaya HP di
+    # WiFi yang sama bisa langsung tahu alamat buat buka /remote, tanpa
+    # user perlu cari tau IP laptopnya sendiri secara manual.
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 
 async def main_async(args):
@@ -341,6 +365,10 @@ async def main_async(args):
     dashboard_path = os.path.join(here, "dashboard.html")
     if not os.path.exists(dashboard_path):
         print(f"[fatal] dashboard.html tidak ditemukan di {dashboard_path}")
+        sys.exit(1)
+    remote_path = os.path.join(here, "remote.html")
+    if not os.path.exists(remote_path):
+        print(f"[fatal] remote.html tidak ditemukan di {remote_path}")
         sys.exit(1)
 
     log_dir = os.path.join(here, "logs")
@@ -351,12 +379,14 @@ async def main_async(args):
     hub = Hub(args.esp_host, args.esp_port, log_path)
     print(f"[log] rekaman sesi (replay) ke {hub.session_path}")
 
-    app = make_app(hub, dashboard_path)
+    app = make_app(hub, dashboard_path, remote_path)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", args.port)
     await site.start()
-    print(f"[http] dashboard di http://localhost:{args.port}")
+    lan_ip = get_lan_ip()
+    print(f"[http] dashboard (laptop)  : http://localhost:{args.port}")
+    print(f"[http] remote KIRI/KANAN (HP, WiFi sama): http://{lan_ip}:{args.port}/remote")
 
     esp_task = asyncio.create_task(esp_link_task(hub))
 
