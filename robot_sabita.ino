@@ -126,160 +126,145 @@ String pendingQR = "";
 unsigned long pendingQRTime = 0;
 #define NODEZONE_TIMEOUT_MS 2000
 
-// ===================== PID LINE FOLLOWER (ADAPTIF, SENSOR DIGITAL) ========
-// position = weighted_sum(sensor yg HIGH/kena garis) / jumlah sensor kena
-// garis. Bobot kiri->kanan: S1=-2, S2=-1, S3=0, S4=+1, S6=+2 (SENSOR_POS[]).
-// gain adaptif: |error|>1.5 -> Kp*2.0 ; |error|>0.8 -> Kp*1.3 ; lain -> Kp*1.0
-// Catatan: total sensor aktif tinggi (persimpangan/marka lebar) otomatis
-// menghasilkan position~0 kalau simetris (mis. semua 5 aktif: bobot
-// -2-1+0+1+2=0) -- robot jalan lurus tanpa perlu cabang khusus terpisah.
-float Kp = 30.0f, Ki = 0.01f, Kd = 15.0f;
-float pidIntegral  = 0.0f;
-float pidPrevError = 0.0f;
-float gLastPos = 0.0f, gLastErr = 0.0f, gLastCorr = 0.0f;
+// ===================== LINE FOLLOWER: BANG-BANG SEDERHANA =================
+// Tes diagnostik 2026-09-14: seluruh mesin PID adaptif + redam + spin-cari +
+// settle (lihat riwayat panjang di git log/commit sebelumnya) DIHAPUS, diganti
+// logika bang-bang paling sederhana -- tujuannya mengisolasi apakah masalah
+// "robot menghindari garis" itu soal SOFTWARE (algoritma kontrol) atau
+// HARDWARE (sensor/motor/mekanik), dengan cara menghilangkan semua variabel
+// software dari persamaan sekaligus.
+//
+// Kp/Ki/Kd TIDAK dipakai lineFollow() lagi (dibiarkan ada cuma supaya
+// perintah WS KP:/KI:/KD: & field JSON kp/ki/kd tetap valid, TIDAK ada
+// pengaruh ke gerak robot selama tes bang-bang ini).
+float Kp = 15.0f, Ki = 0.01f, Kd = 8.0f;
+float gLastPos = 0.0f, gLastErr = 0.0f, gLastCorr = 0.0f;  // sekarang statis/tidak dipakai lineFollow(), dibiarkan buat JSON pos/err/corr
+String gLastMode = "OFF";
+String prevMode  = "";  // buat deteksi transisi mode -- broadcast cuma pas berubah, bukan tiap loop()
+int gSpeedR = 0, gSpeedL = 0;  // PWM motor R/L TERAKHIR yg BENAR2 dikirim ledcWrite()
 
-// ---- Penanganan area node (persimpangan/marka lebar) & sensor kosong ----
-bool  node_crossing   = false;  // sedang melintasi area lebar (total>=4 sensor HIGH)
-float last_correction = 0.0f;   // correction terakhir yg benar2 dipakai motor
+// Recovery saat garis hilang total (semua sensor putih) -- lihat lineFollow().
+int lastTurnDir = 0;          // -1=terakhir belok/koreksi kiri, 0=lurus, +1=kanan
+unsigned long lostSince = 0;   // millis() saat garis pertama kali hilang, 0=lagi tidak hilang
+
 // Diset true saat QR ter-scan ketika robotState==MOVING (di loop()); dipakai
 // buat pelan-pelan sesaat sebelum sampai node. Direset di onArrived().
+// (bagian dari logika QR yg TIDAK diubah -- sekarang tidak dibaca lineFollow()
+// lagi, tapi variabelnya dibiarkan supaya blok QR di loop() tidak perlu diubah.)
 bool  approaching_node = false;
 
-// Redam correction begitu garis hilang total (total==0), BUKAN ditahan penuh
-// tanpa batas -- terbukti dari log 2026-09-05 (robot_log_20260905_170408.csv)
-// correction sempat nyangkut 120.5 (belok tajam) selama >10 detik nonstop
-// begitu garis hilang pas robot lagi menikung keras, bikin robot spiral
-// menjauh & kelihatan seperti "menghindari" garis hitam. correctionAtLineLoss
-// menyimpan nilai correction PERSIS saat garis pertama kali hilang (referensi
-// tetap buat kurva peluruhan), lineLostSince menandai kapan itu terjadi.
-float correctionAtLineLoss = 0.0f;
-unsigned long lineLostSince = 0;   // 0 = garis sedang tidak hilang
-#define LINE_LOST_TAU_MS 150.0f    // konstanta waktu peluruhan (~5% tersisa di ~450ms)
-
-// Pencarian aktif: kalau garis masih belum ketemu setelah fase redam di atas
-// selesai (correction sudah ~habis diredam), robot BERBELOK TERUS ke arah
-// sensor hitam TERAKHIR (tanda correctionAtLineLoss) sampai garis ketemu
-// lagi -- bukan jalan lurus pasrah tanpa henti. Terbukti perlu dari log
-// 2026-09-05 (robot_log_20260905_215847.csv): pernah 15.7 DETIK nonstop
-// jalan lurus buta sebelum kebetulan nemu garis lagi di sisi lain track.
-#define SEARCH_GRACE_MS 400.0f     // durasi fase redam sebelum mulai aktif belok cari
-#define SEARCH_TURN_FRAC 0.5f      // besar belok saat mencari, fraksi dari baseSpeed
-
-// Debounce "garis ketemu lagi" (total>0) SEBELUM mereset ingatan arah
-// pencarian (lineLostSince/correctionAtLineLoss). Tanpa ini, satu siklus
-// loop() yg kena noise sensor sesaat (total>0 palsu selama <1 loop, tidak
-// akan pernah tertangkap di log 50ms) bisa mereset ingatan arah dan bikin
-// pencarian berbalik ke arah SALAH -- terbukti dari recording 2026-09-05
-// (recording_20260905_221653.csv): sensor s1-s6 tercatat KONSTAN "1 1 1 1 1"
-// (semua putih) sepanjang seluruh episode, tapi correction pencarian
-// berbalik dari -35 (kiri, benar) jadi +35 (kanan, salah) di tengah jalan.
-int consecNonZero = 0;
-#define GLITCH_FILTER_N 3   // minimal siklus berturut2 total>0 baru dianggap valid, bukan noise
-
 void resetPID(){
-  pidIntegral=0.0f; pidPrevError=0.0f;
-  node_crossing=false; last_correction=0.0f; approaching_node=false;
-  correctionAtLineLoss=0.0f; lineLostSince=0; consecNonZero=0;
+  gLastMode = "OFF";
+  lastTurnDir = 0;
+  lostSince = 0;
 }
 
-void computePID(bool drive){
-  int w1 = (sDigital[0]==0) ? 1 : 0;  // S1 kena garis (LOW)
-  int w2 = (sDigital[1]==0) ? 1 : 0;  // S2 kena garis
-  int w3 = (sDigital[2]==0) ? 1 : 0;  // S3 kena garis
-  int w4 = (sDigital[3]==0) ? 1 : 0;  // S4 kena garis
-  int w6 = (sDigital[4]==0) ? 1 : 0;  // S6 kena garis
-  int total = w1+w2+w3+w4+w6;
-  float weighted = w1*SENSOR_POS[0] + w2*SENSOR_POS[1] + w3*SENSOR_POS[2]
-                  + w4*SENSOR_POS[3] + w6*SENSOR_POS[4];
-  float pos = (total>0) ? (weighted/(float)total) : gLastPos;
-  float error = pos;
+// Broadcast transisi mode ke dashboard/CSV secara real-time -- cuma kirim
+// SAAT BERUBAH (bukan tiap loop()).
+void reportPidMode(){
+  if (gLastMode != prevMode) {
+    prevMode = gLastMode;
+    String mj = "{"+KV("type","pidmode")+","+KV("mode",gLastMode)+","+KN("t",String(millis()))+"}";
+    bcast(mj);
+  }
+}
 
-  if (!drive) {
-    // Robot tidak diaktuasi sama sekali di cabang ini (IDLE/ARRIVED/manual).
-    // correction dilaporkan 0 -- BUKAN dihitung dari pidPrevError basi (bug
-    // lama: deriv jadi selalu besar krn pidPrevError cuma di-update saat
-    // drive=true, sehingga corr "macet" di angka tinggi selama robot diam &
-    // menyesatkan log). node_crossing/last_correction juga TIDAK disentuh
-    // supaya state-nya utuh begitu robot MOVING lagi.
-    gLastPos = pos; gLastErr = error; gLastCorr = 0.0f;
+// Bang-bang sederhana -- persis spesifikasi tes diagnostik 2026-09-14.
+// Dipanggil HANYA saat driving==true (gating-nya di loop(), bukan di sini --
+// lihat "if(driving) lineFollow();"). Baca sensor LANGSUNG lewat digitalRead
+// (bukan lewat sDigital[] yg sudah dibaca readSensors() di awal loop())
+// sesuai kode yg diberikan, supaya benar2 independen dari sisa sistem lama.
+void lineFollow() {
+  int s1 = (digitalRead(PIN_S1)==LOW) ? 1 : 0;
+  int s2 = (digitalRead(PIN_S2)==LOW) ? 1 : 0;
+  int s3 = (digitalRead(PIN_S3)==LOW) ? 1 : 0;
+  int s4 = (digitalRead(PIN_S4)==LOW) ? 1 : 0;
+  int s6 = (digitalRead(PIN_S6)==LOW) ? 1 : 0;
+
+  gLastMode = "BANGBANG";
+
+  // --- Hitung lastTurnDir di tiap kondisi (dipakai buat nentuin arah spin
+  // pas garis hilang total di bawah) -- diupdate SEBELUM dicek "tidak ada
+  // garis" supaya begitu itu terjadi (s1..s6 semua 0), nilainya sudah
+  // menyimpan arah TERAKHIR KALI garis masih kelihatan, bukan ke-reset. ---
+  if (s2 || s1) lastTurnDir = -1;      // terakhir kiri
+  if (s4 || s6) lastTurnDir = +1;      // terakhir kanan
+  if (s3 && !s2 && !s4) lastTurnDir = 0;  // lurus
+
+  // --- Tidak ada garis sama sekali: recovery, bukan cuma jalan lurus terus
+  // (bug lama: robot keluar jalur & gak pernah balik krn cuma maju 40/40). ---
+  if (!s1 && !s2 && !s3 && !s4 && !s6) {
+    if (lostSince == 0) lostSince = millis();
+    unsigned long lost = millis() - lostSince;
+
+    if (lost < 300) {
+      // Fase 1: maju pelan dulu -- mungkin cuma celah kecil di garis, bukan
+      // benar-benar kehilangan jalur.
+      ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,35);
+      ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,35);
+      gSpeedR=35; gSpeedL=35;
+    } else {
+      // Fase 2: spin di tempat ke arah terakhir kali garis kelihatan, buat
+      // nyari garis lagi. PAKAI motorKiri()/motorKanan() (BUKAN ledcWrite
+      // manual dgn asumsi kinematika standar) krn cuma dua fungsi itu yg
+      // sudah divalidasi FISIK LANGSUNG arahnya benar -- channel CH_R_*/
+      // CH_L_* tertukar dari label kanan/kiri fisik robot (lihat catatan di
+      // bawah), jadi menulis ulang pola ledcWrite manual di sini gampang
+      // kebalik lagi.
+      if (lastTurnDir <= 0) {
+        motorKiri();
+        gSpeedR=-MOTOR_SPEED; gSpeedL=MOTOR_SPEED;
+      } else {
+        motorKanan();
+        gSpeedR=MOTOR_SPEED; gSpeedL=-MOTOR_SPEED;
+      }
+    }
+    reportPidMode();
     return;
   }
+  lostSince = 0;  // garis ketemu lagi
 
-  int baseSpeed = approaching_node ? (int)(MOTOR_SPEED*0.7f) : MOTOR_SPEED;
-  float correction;
-
-  // Hitung debounce SEBELUM cabang -- lihat catatan GLITCH_FILTER_N di atas.
-  if (total > 0) consecNonZero++; else consecNonZero = 0;
-  bool lineConfirmed = (consecNonZero >= GLITCH_FILTER_N);
-
-  if (total >= 4) {
-    // Persimpangan/area node lebar -- jalan lurus pelan (speed tetap 50,
-    // BUKAN baseSpeed, sesuai spesifikasi), tandai sedang melintasi node.
-    if (lineConfirmed) lineLostSince = 0;  // sensor aktif lagi (walau bukan garis tipis) -- bukan "hilang", TAPI hanya kalau bukan noise sesaat
-    node_crossing = true;
-    correction = 0.0f;
-    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,50);
-    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,50);
-  } else if (total == 0) {
-    // Tidak ada sensor HIGH sama sekali. Dua fase:
-    // Fase redam -- SEARCH_GRACE_MS pertama: redam correction terakhir
-    //   bertahap ke 0 (buat celah kecil/garis putus-putus -- jangan overreact).
-    // Fase cari -- setelah itu, garis dianggap BENAR-BENAR hilang -- aktif
-    //   berbelok ke arah sensor hitam TERAKHIR (tanda correctionAtLineLoss)
-    //   sampai ketemu garis lagi (keluar dari cabang ini otomatis begitu
-    //   total>0 lagi).
-    if (lineLostSince == 0) { lineLostSince = millis(); correctionAtLineLoss = last_correction; }
-    float elapsedMs = (float)(millis() - lineLostSince);
-    if (elapsedMs < SEARCH_GRACE_MS) {
-      correction = correctionAtLineLoss * expf(-elapsedMs / LINE_LOST_TAU_MS);
-    } else {
-      float dir = (correctionAtLineLoss < 0.0f) ? -1.0f : 1.0f;  // default kanan kalau pas hilang persis di error=0
-      correction = dir * baseSpeed * SEARCH_TURN_FRAC;
-    }
-    int speedR = constrain((int)((baseSpeed+RIGHT_TRIM) - correction), 0, 255);
-    int speedL = constrain((int)((baseSpeed+LEFT_TRIM) + correction), 0, 255);
-    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,speedR);
-    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,speedL);
-  } else {
-    // 1-3 sensor HIGH -- PID normal (weighted centroid).
-    if (lineConfirmed) lineLostSince = 0;  // garis ketemu lagi, TAPI hanya kalau bukan noise sesaat
-    float ae = fabs(error);
-    float kpEff = (ae>1.5f) ? Kp*2.0f : (ae>0.8f) ? Kp*1.3f : Kp*1.0f;
-    pidIntegral = constrain(pidIntegral+error, -50.0f, 50.0f);
-    float deriv = error - pidPrevError;
-    correction = kpEff*error + Ki*pidIntegral + Kd*deriv;
-    pidPrevError = error;
-
-    if (node_crossing) {
-      // Baru keluar dari area node lebar (total turun dari >=4 ke 1-3) --
-      // reset flag. "wall-following kiri" (instruksi): interpretasi kami --
-      // dorongan correction sesaat 1 siklus ke kiri di atas PID normal,
-      // supaya robot menangkap kembali jalur di sisi kiri begitu keluar
-      // dari node. Codebase ini tidak punya konsep dinding fisik sama
-      // sekali (bukan robot maze), jadi ini BUKAN algoritma wall-follow
-      // penuh -- kalau maksudnya beda, tolong koreksi.
-      node_crossing = false;
-      correction -= fabs(Kp);
-    }
-
-    // Batasi magnitude correction supaya TIDAK ADA roda yang sampai berhenti
-    // total saat belok tajam (S1/S6 sendirian aktif, |error|=2 -> correction
-    // bisa sampai +-120 padahal baseSpeed cuma ~70 -> satu roda ke-clamp 0
-    // sementara roda lain ke ~190 -- pivot sangat ekstrem & instan yg
-    // fisiknya kelihatan seperti robot "menyentak/menghindar" pas baru
-    // mendeteksi hitam, alih-alih menikung mulus mengikuti garis).
-    float maxCorr = baseSpeed * 0.7f;
-    correction = constrain(correction, -maxCorr, maxCorr);
-
-    int speedR = constrain((int)((baseSpeed+RIGHT_TRIM) - correction), 0, 255);
-    int speedL = constrain((int)((baseSpeed+LEFT_TRIM) + correction), 0, 255);
-    // Motor maju: RPWM=0, LPWM=speed
-    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,speedR);
-    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,speedL);
+  // PENTING (dikonfirmasi tes fisik 2026-09-14): channel CH_R_*/CH_L_* di
+  // kode TERTUKAR relatif ke sisi fisik kanan/kiri robot -- terbukti dari
+  // motorKanan() (dipakai tombol manual "Kanan", dikonfirmasi user "kalau
+  // klik kanan, roda kanan MUNDUR & roda kiri MAJU" -- itu justru gerakan
+  // yg BENAR utk belok kanan secara kinematika tank standar). motorKanan()/
+  // motorKiri() TIDAK diubah krn sudah divalidasi fisik langsung, TAPI
+  // cabang differential di bawah ini (S1/S2/S4/S6) sebelumnya ditulis pakai
+  // asumsi kinematika standar TANPA memperhitungkan tukar-kanal ini -- jadi
+  // semuanya kebalik. Fix: tukar nilai PWM yg ditulis ke CH_R_LPWM<->CH_L_LPWM
+  // di tiap cabang asimetris, supaya arah BELOK yg dimaksud (komentar tiap
+  // cabang) match dgn arah FISIK yg benar.
+  if (s3) {
+    // Tengah - lurus
+    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,70);
+    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,70);
+    gSpeedR=70; gSpeedL=70;
+  } else if (s2) {
+    // Agak kiri - koreksi kiri (kiri lebih pelan) -- ditukar dari asumsi awal
+    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,30);
+    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,70);
+    gSpeedR=30; gSpeedL=70;
+  } else if (s4) {
+    // Agak kanan - koreksi kanan (kanan lebih pelan) -- ditukar dari asumsi awal
+    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,70);
+    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,30);
+    gSpeedR=70; gSpeedL=30;
+  } else if (s1) {
+    // Jauh kiri - belok kiri tajam (TETAP MAJU) -- ditukar dari asumsi awal
+    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,20);
+    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,MOTOR_SPEED);
+    gSpeedR=20; gSpeedL=MOTOR_SPEED;
+  } else if (s6) {
+    // Jauh kanan - belok kanan tajam (TETAP MAJU) -- ditukar dari asumsi awal
+    ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,MOTOR_SPEED);
+    ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,20);
+    gSpeedR=MOTOR_SPEED; gSpeedL=20;
   }
+  // (tidak perlu branch "tidak ada garis" di sini lagi -- sudah ditangani
+  // early return di atas sebelum if(s3) ini, dengan recovery fase 1/2.)
 
-  last_correction = correction;
-  gLastPos = pos; gLastErr = error; gLastCorr = correction;
+  reportPidMode();
 }
 
 // ===================== SEND HELPERS =====================
@@ -341,7 +326,8 @@ String jDfp(String status, String name="", String desc="") {
 }
 // Sensor digital murni -- tidak ada lagi field r1..r6 (raw ADC).
 String jSensor(int s1,int s2,int s3,int s4,int s6,String arah,
-               float pos,float err,float corr){
+               float pos,float err,float corr,String mode,int speedR,int speedL,
+               unsigned long lostMs){
   return "{"+KV("type","sensor")+","
     +KN("s1",String(s1))+","
     +KN("s2",String(s2))+","
@@ -354,6 +340,10 @@ String jSensor(int s1,int s2,int s3,int s4,int s6,String arah,
     +KN("kp",String(Kp,2))+","
     +KN("ki",String(Ki,3))+","
     +KN("kd",String(Kd,2))+","
+    +KV("mode",mode)+","
+    +KN("speedR",String(speedR))+","
+    +KN("speedL",String(speedL))+","
+    +KN("lost_ms",String(lostMs))+","
     +KV("arah",arah)+"}";
 }
 String jQR(String data) {
@@ -565,8 +555,7 @@ void wsEvent(uint8_t num,WStype_t type,uint8_t* payload,size_t len){
       manualMode=false;
       robotState=MOVING;
       resetPID();
-      Serial.printf("MOVING: int=%.2f prev=%.2f cross=%d lastCorr=%.2f\n",
-        pidIntegral, pidPrevError, node_crossing, last_correction);
+      Serial.println("MOVING: mode=" + gLastMode);
       String s=jState("MOVING"); bcast(s);
       Serial.println("TEST: line-follow paksa aktif (tanpa QR)");
     }
@@ -639,7 +628,15 @@ void loop(){
   int s1=sDigital[0],s2=sDigital[1],s3=sDigital[2],s4=sDigital[3],s6=sDigital[4];
 
   bool driving = (!manualMode && robotState==MOVING);
-  computePID(driving);
+  if(driving) {
+    lineFollow();
+  } else if (gLastMode != "OFF") {
+    // Motor sudah dihentikan terpisah lewat motorStop() di FSM (IDLE/ARRIVED)
+    // -- ini cuma supaya telemetry (mode/speedR/speedL di dashboard) tidak
+    // nyangkut di "BANGBANG" pas robot sebenarnya sudah berhenti.
+    gLastMode = "OFF"; gSpeedR = 0; gSpeedL = 0;
+    reportPidMode();
+  }
 
   if(millis()-lastSensor>=SENSOR_INTERVAL_MS){
     lastSensor=millis();
@@ -653,7 +650,8 @@ void loop(){
     else if(l3&&l4)         arah="BELOK KANAN";
     else if(l1||l2)         arah="KIRI TAJAM";
     else if(l4||l6)         arah="KANAN TAJAM";
-    String sj=jSensor(s1,s2,s3,s4,s6,arah,gLastPos,gLastErr,gLastCorr);
+    unsigned long lostMs = (lostSince>0) ? (millis()-lostSince) : 0;
+    String sj=jSensor(s1,s2,s3,s4,s6,arah,gLastPos,gLastErr,gLastCorr,gLastMode,gSpeedR,gSpeedL,lostMs);
     bcast(sj);
   }
 
@@ -739,8 +737,7 @@ void loop(){
         } else {
           resetPID();
           robotState=MOVING;
-          Serial.printf("MOVING: int=%.2f prev=%.2f cross=%d lastCorr=%.2f\n",
-            pidIntegral, pidPrevError, node_crossing, last_correction);
+          Serial.println("MOVING: mode=" + gLastMode);
           String s=jState("MOVING"); bcast(s);
           Serial.println("Bergerak...");
         }
@@ -748,7 +745,7 @@ void loop(){
       break;
 
     case MOVING:
-      // aktuasi motor sudah dilakukan oleh computePID(driving) di atas
+      // aktuasi motor sudah dilakukan oleh lineFollow() di atas
       if(qrToProcess.length()>0){
         int idx=parseNode(qrToProcess);
         if(idx>=0&&!visited[idx]){

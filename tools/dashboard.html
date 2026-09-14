@@ -14,6 +14,12 @@ body{font-family:'Segoe UI',sans-serif;background:#0f1117;color:#e0e0e0;padding:
 .link-item{display:flex;align-items:center;gap:6px}
 .dot{width:9px;height:9px;border-radius:50%;background:#ef4444;display:inline-block}
 .dot.on{background:#22c55e}
+#clockBox{font-family:monospace;font-size:13px;color:#94a3b8}
+#missionTimer{font-family:monospace;font-weight:bold;color:#64748b;margin-left:4px}
+#missionTimer.running{color:#22c55e}
+#missionTimer.stopped{color:#ef4444}
+#replayBanner{color:#ef4444;font-weight:bold;animation:blink 1.2s infinite}
+@keyframes blink{50%{opacity:.35}}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
 @media (max-width:980px){.grid{grid-template-columns:1fr}}
 .card{background:#1a1d2e;border-radius:10px;padding:14px;margin-bottom:12px;border:1px solid #2a2d3e}
@@ -64,11 +70,6 @@ canvas.chart{width:100%;height:110px!important}
 .sv2{font-size:12px;font-weight:bold;color:#3b82f6;min-width:44px;text-align:right}
 .num2{width:64px;background:#0f1117;border:1px solid #3a3d4e;color:#e0e0e0;border-radius:4px;padding:3px 5px;font-size:11px}
 
-.pid-current{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px}
-.pid-current .box{background:#14532d;border-radius:6px;padding:8px;text-align:center}
-.pid-current .box .l{font-size:9px;color:#86efac}
-.pid-current .box .v{font-size:15px;font-weight:bold;color:#22c55e}
-
 .btn{width:100%;padding:11px;border:none;border-radius:8px;color:#fff;font-weight:bold;font-size:13px;cursor:pointer;margin-bottom:8px}
 .btn:active{filter:brightness(1.2)}
 .btn-red{background:#dc2626}.btn-green{background:#16a34a}.btn-blue{background:#2563eb}
@@ -94,6 +95,9 @@ canvas.chart{width:100%;height:110px!important}
 <div class="hdr">
 <h1>SABITA DASHBOARD</h1>
 <div class="links">
+  <div class="link-item" id="clockBox">--:--:--</div>
+  <div class="link-item">Misi: <span id="missionTimer">00:00.0</span></div>
+  <div class="link-item" id="replayBanner" hidden>&#9679; REPLAY MODE</div>
   <div class="link-item"><span class="dot" id="dotServer"></span>Server laptop</div>
   <div class="link-item"><span class="dot" id="dotEsp"></span>Robot (ESP32)</div>
 </div>
@@ -114,6 +118,11 @@ canvas.chart{width:100%;height:110px!important}
     <div class="an" id="NA">-</div>
     <div class="pb"><div class="pf" id="PF" style="width:0%"></div></div>
     <div class="pt" id="PT">0 / 6 node dikunjungi</div>
+  </div>
+
+  <div class="card">
+    <div class="tt">Riwayat Kunjungan Node</div>
+    <div class="qh" id="nodeHist"><div class="qd em" style="text-align:left;padding:0;background:none;min-height:0">Belum ada kunjungan.</div></div>
   </div>
 
   <div class="card" id="rcCard" hidden>
@@ -150,6 +159,31 @@ canvas.chart{width:100%;height:110px!important}
     <div class="manual-status" id="RECS" style="margin-top:8px">Rekaman sesi: nonaktif</div>
     <button class="btn btn-green" id="RECB" onclick="toggleRec()">● MULAI REKAM SESI INI</button>
     <div class="pt">Log utama di atas selalu jalan sejak server start. Tombol ini bikin file CSV terpisah khusus mulai dari sekarang, biar gampang dicari lagi tanpa filter waktu manual.</div>
+    <div class="sr" style="margin-top:10px"><label>Tanda video</label><input type="text" class="num2" id="MARKTXT" placeholder="VIDEO_START" style="flex:1;width:auto"></div>
+    <button class="btn btn-purple" id="MARKB" onclick="sendMarker()">&#127991; TANDAI (marker video)</button>
+    <div class="pt" id="MARKI">Klik saat mulai rekam video, buat sinkronisasi sama log CSV.</div>
+  </div>
+
+  <div class="card">
+    <div class="tt">Replay Sesi (dari file JSON)</div>
+    <div class="pt" style="margin-bottom:8px">Server otomatis menyimpan semua pesan ESP32 ke logs/session_*.json tiap kali dijalankan. Load file itu di sini untuk memutar ulang semua panel dashboard persis seperti data live.</div>
+    <input type="file" id="replayFile" accept=".json" style="width:100%;margin-bottom:8px;font-size:11px;color:#94a3b8">
+    <div class="pt" id="replayInfo" style="margin-bottom:8px">Belum ada file dimuat.</div>
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <button class="btn btn-green" id="replayPlayBtn" style="margin:0" onclick="replayPlay()">&#9654; PLAY</button>
+      <button class="btn btn-yellow" id="replayPauseBtn" style="margin:0" onclick="replayPause()">&#10074;&#10074; PAUSE</button>
+      <button class="btn btn-red" id="replayStopBtn" style="margin:0" onclick="replayStop()">&#9632; STOP</button>
+    </div>
+    <input type="range" id="replaySlider" min="0" max="1000" value="0" style="width:100%;margin-bottom:6px" oninput="onReplaySliderInput(this.value)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+      <span class="pt" id="replayTimeLbl" style="margin:0">00:00 / 00:00</span>
+      <select id="replaySpeedSel" class="num2" onchange="setReplaySpeed(this.value)" style="width:auto">
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+        <option value="2">2x</option>
+        <option value="4">4x</option>
+      </select>
+    </div>
   </div>
 
 </div>
@@ -168,11 +202,17 @@ canvas.chart{width:100%;height:110px!important}
     <div class="lbl" style="font-size:10px;color:#64748b;margin-bottom:2px">Posisi tertimbang (-2 kiri .. +2 kanan, S3=tengah)</div>
     <div class="gauge"><div class="mid" title="S3 (tengah)"></div><span class="lbl left">-2 (S1)</span><span class="lbl right">+2 (S6)</span>
       <div class="marker" id="posMarker" style="left:50%"></div></div>
-    <div class="metrics">
+    <div class="metrics" style="grid-template-columns:1fr 1fr 1fr 1fr">
       <div class="metric"><div class="l">ARAH</div><div class="v" id="mArah" style="font-size:12px">-</div></div>
       <div class="metric"><div class="l">ERROR</div><div class="v" id="mErr">0.00</div></div>
       <div class="metric"><div class="l">CORRECTION</div><div class="v" id="mCorr">0.00</div></div>
+      <div class="metric"><div class="l">MODE</div><div class="v" id="mMode" style="font-size:11px">-</div></div>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="tt">Riwayat Transisi Mode PID</div>
+    <div class="qh" id="modeHist"><div class="qd em" style="text-align:left;padding:0;background:none;min-height:0">Belum ada transisi.</div></div>
   </div>
 
   <div class="card">
@@ -180,11 +220,11 @@ canvas.chart{width:100%;height:110px!important}
     <div class="manual-status" id="MS">Mode manual nonaktif</div>
     <button class="btn btn-blue" id="MB" onclick="toggleManual()">AKTIFKAN MODE MANUAL</button>
     <div class="pad">
-      <div class="empty"></div><button class="btn btn-blue" data-move="MAJU" style="margin:0">⬆</button><div class="empty"></div>
-      <button class="btn btn-yellow" data-move="KIRI" style="margin:0">⬅</button>
-      <button class="btn btn-red" data-move="STOP" style="margin:0">■</button>
-      <button class="btn btn-yellow" data-move="KANAN" style="margin:0">➡</button>
-      <div class="empty"></div><button class="btn btn-blue" data-move="MUNDUR" style="margin:0">⬇</button><div class="empty"></div>
+      <div class="empty"></div><button class="btn btn-blue" data-move="MAJU" style="margin:0">⬆ Maju</button><div class="empty"></div>
+      <button class="btn btn-yellow" data-move="KIRI" style="margin:0">⬅ Kiri</button>
+      <button class="btn btn-red" data-move="STOP" style="margin:0">■ Stop</button>
+      <button class="btn btn-yellow" data-move="KANAN" style="margin:0">➡ Kanan</button>
+      <div class="empty"></div><button class="btn btn-blue" data-move="MUNDUR" style="margin:0">⬇ Mundur</button><div class="empty"></div>
     </div>
   </div>
 
@@ -192,30 +232,19 @@ canvas.chart{width:100%;height:110px!important}
     <div class="tt">Grafik Live (5 detik terakhir)</div>
     <div class="chart-wrap"><div class="lbl">Sensor digital S1-S4,S6 (0=garis, 1=putih)</div><canvas class="chart" id="chartAdc"></canvas></div>
     <div class="chart-wrap"><div class="lbl">PID: error vs correction</div><canvas class="chart" id="chartPid"></canvas></div>
-    <div class="chart-wrap"><div class="lbl">Estimasi kecepatan motor R/L (dihitung di dashboard)</div><canvas class="chart" id="chartSpeed"></canvas></div>
+    <div class="chart-wrap"><div class="lbl">PWM motor R/L asli (dari firmware, +maju/-mundur)</div><canvas class="chart" id="chartSpeed"></canvas></div>
   </div>
 
   <div class="card">
-    <div class="tt">PID Tuning</div>
-    <div class="pid-current">
-      <div class="box"><div class="l">Kp aktif</div><div class="v" id="curKp">-</div></div>
-      <div class="box"><div class="l">Ki aktif</div><div class="v" id="curKi">-</div></div>
-      <div class="box"><div class="l">Kd aktif</div><div class="v" id="curKd">-</div></div>
-    </div>
-    <div class="sr"><label>Kp (0-100)</label><input type="range" class="sl2" id="Kp" min="0" max="100" step="0.5" value="30">
-      <input type="number" class="num2" id="KpN" min="0" max="100" step="0.5" value="30"></div>
-    <div class="sr"><label>Ki (0-1)</label><input type="range" class="sl2" id="Ki" min="0" max="1" step="0.005" value="0.01">
-      <input type="number" class="num2" id="KiN" min="0" max="1" step="0.005" value="0.01"></div>
-    <div class="sr"><label>Kd (0-50)</label><input type="range" class="sl2" id="Kd" min="0" max="50" step="0.5" value="15">
-      <input type="number" class="num2" id="KdN" min="0" max="50" step="0.5" value="15"></div>
-    <button class="btn btn-green" onclick="applyPID()">APPLY PID KE ROBOT</button>
+    <div class="tt">Tes Line Follower</div>
+    <div class="pt" style="margin-bottom:8px">PID sudah di-tuning tetap di firmware (bukan lagi lewat dashboard) berdasarkan analisis log. Tombol di bawah cuma buat memicu line-follow tanpa perlu scan QR.</div>
     <button class="btn btn-blue" onclick="W('TEST:LINEFOLLOW')">▶ TES LINE FOLLOW (TANPA QR)</button>
     <button class="btn btn-red" onclick="W('TEST:STOP')">■ STOP TES</button>
   </div>
 
   <div class="card">
     <div class="tt">Kontrol</div>
-    <button class="btn btn-red" onclick="W('RESET')">RESET MISI</button>
+    <button class="btn btn-red" onclick="doReset()">RESET MISI</button>
     <button class="btn btn-yellow" onclick="W('STOP_AUDIO')">STOP AUDIO</button>
     <div class="sr"><label>Speed (BASE)</label><input type="range" class="sl2" id="SP" min="0" max="255" value="70"><span class="sv2" id="SPV">70</span></div>
     <div class="sr"><label>Trim Kiri</label><input type="range" class="sl2" id="LT" min="-50" max="50" value="0"><span class="sv2" id="LTV">0</span></div>
@@ -238,6 +267,7 @@ const EDGES = [['A','B',1.07],['A','E',1.51],['A','F',1.21],['B','C',1.80],['B',
 let curr='-', prev='-', next='-', routeStr='', routeNodes=[];
 let visitedSet = new Set();
 let manualOn=false;
+let lastState=null;
 
 // ================= WEBSOCKET KE SERVER LOKAL =================
 let ws, retryTimer;
@@ -247,7 +277,15 @@ function connect(){
   ws.onopen = ()=>{ g('dotServer').classList.add('on'); clearInterval(retryTimer); };
   ws.onclose = ()=>{ g('dotServer').classList.remove('on'); g('dotEsp').classList.remove('on');
     retryTimer=setInterval(connect,2000); };
-  ws.onmessage = (e)=>{ try{ onMsg(JSON.parse(e.data)); }catch(x){ console.log(x); } };
+  ws.onmessage = (e)=>{
+    try{
+      const d = JSON.parse(e.data);
+      // Saat replay aktif, data live diabaikan (kecuali status koneksi) biar
+      // gak tabrakan/interleave sama data yang lagi diputar ulang.
+      if(replayActive && d.type!=='esplink') return;
+      onMsg(d);
+    }catch(x){ console.log(x); }
+  };
 }
 function g(id){ return document.getElementById(id); }
 
@@ -262,6 +300,20 @@ function onMsg(d){
   else if(d.type==='mode') onMode(d);
   else if(d.type==='rec') onRec(d);
   else if(d.type==='routecompare') onRouteCompare(d);
+  else if(d.type==='pidmode') onPidMode(d);
+  else if(d.type==='marker') onMarker(d);
+}
+
+// Riwayat transisi mode PID (TRACK/DECAY/SEARCH_L/SEARCH_R/SETTLE/NODE/OFF)
+// -- dikirim firmware CUMA saat mode berubah, jadi bisa dilihat kapan
+// persisnya robot pindah mode tanpa perlu analisis CSV manual sesudahnya.
+function onPidMode(d){
+  const box=g('modeHist');
+  if(box.children.length===1 && box.children[0].classList.contains('em')) box.innerHTML='';
+  const row=document.createElement('div');
+  row.textContent = new Date().toLocaleTimeString()+' > '+d.mode;
+  box.insertBefore(row, box.firstChild);
+  while(box.children.length>20) box.removeChild(box.lastChild);
 }
 
 function onRouteCompare(d){
@@ -283,6 +335,179 @@ function onRec(d){
 }
 function toggleRec(){ W(recOn ? 'REC:STOP' : 'REC:START'); }
 
+// ================= JAM & TIMER MISI =================
+function tickClock(){ g('clockBox').textContent = new Date().toLocaleTimeString(); }
+tickClock(); setInterval(tickClock, 1000);
+
+let missionTimerStart=null, missionTimerRunning=false, missionTimerRAF=null;
+function fmtTimer(ms){
+  const totalSec = Math.floor(ms/1000);
+  const m = Math.floor(totalSec/60);
+  const s = totalSec%60;
+  const tenths = Math.floor((ms%1000)/100);
+  return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')+'.'+tenths;
+}
+function tickMissionTimer(){
+  if(!missionTimerRunning) return;
+  g('missionTimer').textContent = fmtTimer(performance.now()-missionTimerStart);
+  missionTimerRAF = requestAnimationFrame(tickMissionTimer);
+}
+function startMissionTimer(){
+  if(missionTimerRunning) return;
+  missionTimerStart = performance.now();
+  missionTimerRunning = true;
+  g('missionTimer').classList.remove('stopped'); g('missionTimer').classList.add('running');
+  tickMissionTimer();
+}
+function stopMissionTimer(){
+  missionTimerRunning=false;
+  g('missionTimer').classList.remove('running'); g('missionTimer').classList.add('stopped');
+  if(missionTimerRAF) cancelAnimationFrame(missionTimerRAF);
+}
+function resetMissionTimer(){
+  stopMissionTimer(); missionTimerStart=null;
+  g('missionTimer').textContent='00:00.0';
+  g('missionTimer').classList.remove('running','stopped');
+}
+
+// ================= MARKER VIDEO (TANDAI) =================
+function sendMarker(){
+  const txt = g('MARKTXT').value.trim();
+  const marker = txt.length>0 ? txt : 'VIDEO_START';
+  W('MARKER:'+marker);
+}
+function onMarker(d){
+  g('MARKI').textContent = 'Marker terkirim: "'+d.text+'" @ '+new Date().toLocaleTimeString();
+}
+
+// ================= REPLAY SESI (dari file JSON) =================
+let replayEntries=[], replayDuration=0, replayIndex=0;
+let replayActive=false, replayPlaying=false, replaySpeed=1;
+let replayElapsed=0, replayElapsedBase=0, replayWallBase=0;
+
+function fmtReplayT(sec){
+  const m=Math.floor(sec/60), s=Math.floor(sec%60);
+  return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+}
+function updateReplayTimeLabel(){
+  g('replayTimeLbl').textContent = fmtReplayT(replayElapsed)+' / '+fmtReplayT(replayDuration);
+}
+function updateReplayButtons(){
+  const has = replayEntries.length>0;
+  g('replayPlayBtn').disabled = !has || replayPlaying;
+  g('replayPauseBtn').disabled = !has || !replayPlaying;
+  g('replayStopBtn').disabled = !has;
+}
+
+function resetDashboardState(){
+  g('QH').innerHTML=''; g('QD').textContent='Menunggu scan...'; g('QD').classList.add('em');
+  g('modeHist').innerHTML='<div class="qd em" style="text-align:left;padding:0;background:none;min-height:0">Belum ada transisi.</div>';
+  nodeVisits=[]; renderNodeHist(); dfpPlayStart=null;
+  visitedSet=new Set(); routeNodes=[]; routeStr=''; curr='-'; prev='-'; next='-';
+  g('NP').textContent='-'; g('NC').textContent='-'; g('NN').textContent='-'; g('NN').className='nv p';
+  g('NA').textContent='-'; g('PF').style.width='0%'; g('PT').textContent='0 / 6 node dikunjungi';
+  g('RT').textContent='Rute ACO belum dihitung';
+  g('rcCard').hidden=true;
+  g('SD').textContent='Menghubungkan...'; g('SD').className='sd';
+  g('DF').textContent='DFPlayer: menunggu...'; g('DF').className='ds err'; g('DI').textContent='';
+  ['1','2','3','4','6'].forEach(n=>{ US('B'+n,'V'+n,0); });
+  g('mArah').textContent='-'; g('mErr').textContent='0.00'; g('mCorr').textContent='0.00'; g('mMode').textContent='-';
+  adcHist=[]; pidHist=[]; speedHist=[]; updateCharts();
+}
+
+function loadReplayFile(file){
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    const lines = reader.result.split('\n').map(l=>l.trim()).filter(l=>l.length>0);
+    let entries = lines.map(l=>{ try{ return JSON.parse(l); }catch(e){ return null; } })
+      .filter(e=>e && typeof e.t==='number' && e.data);
+    if(!entries.length){
+      // fallback: mungkin isinya array JSON tunggal, bukan satu objek per baris
+      try{
+        const arr = JSON.parse(reader.result);
+        if(Array.isArray(arr)) entries = arr.filter(e=>e && typeof e.t==='number' && e.data);
+      }catch(e){}
+    }
+    entries.sort((a,b)=>a.t-b.t);
+    replayEntries = entries;
+    replayDuration = entries.length ? entries[entries.length-1].t : 0;
+    replayIndex=0; replayElapsed=0; replayElapsedBase=0; replayWallBase=performance.now(); replayPlaying=false;
+    g('replayInfo').textContent = entries.length+' pesan dimuat, durasi '+replayDuration.toFixed(1)+'s ('+file.name+')';
+    g('replaySlider').value=0;
+    updateReplayTimeLabel();
+    updateReplayButtons();
+  };
+  reader.readAsText(file);
+}
+g('replayFile').addEventListener('change', e=>{
+  const f = e.target.files[0];
+  if(f) loadReplayFile(f);
+});
+
+function seekTo(frac){
+  if(!replayEntries.length) return;
+  const targetT = Math.max(0, Math.min(replayDuration, frac*replayDuration));
+  resetDashboardState();
+  let idx=0;
+  for(; idx<replayEntries.length; idx++){
+    if(replayEntries[idx].t > targetT) break;
+    onMsg(replayEntries[idx].data);
+  }
+  replayIndex = idx;
+  replayElapsed = targetT;
+  replayElapsedBase = targetT;
+  replayWallBase = performance.now();
+  g('replaySlider').value = Math.round(frac*1000);
+  updateReplayTimeLabel();
+}
+function onReplaySliderInput(v){ seekTo(v/1000); }
+
+function replayTick(){
+  if(!replayPlaying) return;
+  replayElapsed = replayElapsedBase + (performance.now()-replayWallBase)*replaySpeed/1000;
+  while(replayIndex < replayEntries.length && replayEntries[replayIndex].t <= replayElapsed){
+    onMsg(replayEntries[replayIndex].data);
+    replayIndex++;
+  }
+  const frac = replayDuration>0 ? Math.min(1, replayElapsed/replayDuration) : 0;
+  g('replaySlider').value = Math.round(frac*1000);
+  updateReplayTimeLabel();
+  if(replayElapsed>=replayDuration){
+    replayPlaying=false; updateReplayButtons(); return;
+  }
+  requestAnimationFrame(replayTick);
+}
+function replayPlay(){
+  if(!replayEntries.length) return;
+  replayActive=true; g('replayBanner').hidden=false;
+  if(replayElapsed>=replayDuration){ seekTo(0); }
+  replayPlaying=true;
+  replayElapsedBase = replayElapsed;
+  replayWallBase = performance.now();
+  updateReplayButtons();
+  requestAnimationFrame(replayTick);
+}
+function replayPause(){ replayPlaying=false; updateReplayButtons(); }
+function replayStop(){
+  replayPlaying=false; replayActive=false;
+  g('replayBanner').hidden=true;
+  resetDashboardState();
+  replayIndex=0; replayElapsed=0; replayElapsedBase=0; replayWallBase=performance.now();
+  g('replaySlider').value=0;
+  updateReplayTimeLabel();
+  updateReplayButtons();
+}
+function setReplaySpeed(v){
+  // Rebase dulu biar ganti speed di tengah play gak bikin lompatan waktu.
+  if(replayPlaying){
+    replayElapsed = replayElapsedBase + (performance.now()-replayWallBase)*replaySpeed/1000;
+    replayElapsedBase = replayElapsed;
+    replayWallBase = performance.now();
+  }
+  replaySpeed = parseFloat(v);
+}
+updateReplayButtons();
+
 function onState(d){
   const s=g('SD'); s.className='sd';
   const map={IDLE:['Scan QR untuk memulai misi',''],
@@ -293,8 +518,34 @@ function onState(d){
   const m=map[d.state]||[d.state,''];
   s.textContent=m[0]; if(m[1]) s.classList.add(m[1]);
   if(d.state==='IDLE') g('rcCard').hidden = true;
+
+  // Timer misi cuma mengikuti state LIVE, bukan hasil replay.
+  if(!replayActive){
+    if(d.state==='IDLE'){ resetMissionTimer(); }
+    else if((d.state==='MOVING'||d.state==='ARRIVED') && (lastState===null || lastState==='IDLE')){ startMissionTimer(); }
+    else if(d.state==='FINISHED'){ stopMissionTimer(); }
+    lastState = d.state;
+  }
 }
+function doReset(){ W('RESET'); resetMissionTimer(); lastState=null; }
+
+// Riwayat kunjungan node (timestamp lokal + durasi audio per node)
+let nodeVisits=[];
+function renderNodeHist(){
+  const h=g('nodeHist');
+  if(!nodeVisits.length){
+    h.innerHTML='<div class="qd em" style="text-align:left;padding:0;background:none;min-height:0">Belum ada kunjungan.</div>';
+    return;
+  }
+  h.innerHTML = nodeVisits.map(v=>{
+    let txt = '['+v.clock+'] Node '+v.node+' - '+(v.art&&v.art!=='-'?v.art:'-');
+    if(v.duration!=null) txt += ' (durasi audio '+v.duration.toFixed(1)+'s)';
+    return '<div>'+txt+'</div>';
+  }).join('');
+}
+let dfpPlayStart=null;
 function onNav(d){
+  const oldCurr = curr;
   prev=d.prev; curr=d.curr; next=d.next;
   if(curr!=='-') visitedSet.add(curr);
   g('NP').textContent=d.prev; g('NC').textContent=d.curr;
@@ -304,6 +555,12 @@ function onNav(d){
   const pct = d.total>0 ? (d.step/d.total)*100 : 0;
   g('PF').style.width=pct+'%';
   g('PT').textContent=d.step+' / '+d.total+' node dikunjungi';
+
+  if(curr!==oldCurr && curr!=='-'){
+    nodeVisits.unshift({node:curr, art:d.art, clock:new Date().toLocaleTimeString(), duration:null});
+    if(nodeVisits.length>20) nodeVisits.pop();
+    renderNodeHist();
+  }
 }
 function onRoute(d){
   routeStr=d.route;
@@ -312,8 +569,15 @@ function onRoute(d){
 }
 function onDfp(d){
   const f=g('DF'); f.className='ds';
-  if(d.status==='ready'){ f.classList.add('rdy'); f.textContent='DFPlayer: Siap'; g('DI').textContent=''; }
-  else if(d.status==='playing'){ f.classList.add('pl'); f.textContent='Playing: '+d.name; g('DI').textContent=d.desc||''; }
+  if(d.status==='ready'){
+    f.classList.add('rdy'); f.textContent='DFPlayer: Siap'; g('DI').textContent='';
+    if(dfpPlayStart!=null){
+      const dur = (performance.now()-dfpPlayStart)/1000;
+      if(nodeVisits.length>0){ nodeVisits[0].duration = dur; renderNodeHist(); }
+      dfpPlayStart=null;
+    }
+  }
+  else if(d.status==='playing'){ f.classList.add('pl'); f.textContent='Playing: '+d.name; g('DI').textContent=d.desc||''; dfpPlayStart=performance.now(); }
   else { f.classList.add('err'); f.textContent='DFPlayer: Error'; }
 }
 function onQr(d){
@@ -334,16 +598,13 @@ function onMode(d){
 // ---- sensor + PID + charts ----
 const HIST_MS = 5000;
 let adcHist=[], pidHist=[], speedHist=[];
-let lastBase=70, lastLTrim=0, lastRTrim=0;
 
 function onSensor(d){
   US('B1','V1',d.s1); US('B2','V2',d.s2); US('B3','V3',d.s3); US('B4','V4',d.s4); US('B6','V6',d.s6);
   g('mArah').textContent=d.arah;
   g('mErr').textContent=Number(d.err).toFixed(2);
   g('mCorr').textContent=Number(d.corr).toFixed(2);
-  g('curKp').textContent=Number(d.kp).toFixed(2);
-  g('curKi').textContent=Number(d.ki).toFixed(3);
-  g('curKd').textContent=Number(d.kd).toFixed(2);
+  g('mMode').textContent=d.mode||'-';
 
   // Rentang posisi tertimbang: -2 (S1) .. +2 (S6), S3=tengah=0 (lihat computePID di firmware)
   const pos = Number(d.pos);
@@ -353,16 +614,17 @@ function onSensor(d){
   const t = performance.now();
   adcHist.push({t, s1:+d.s1, s2:+d.s2, s3:+d.s3, s4:+d.s4, s6:+d.s6});
   pidHist.push({t, err:+d.err, corr:+d.corr});
-  const speedR = clamp((lastBase+lastRTrim) - (+d.corr), 0, 255);
-  const speedL = clamp((lastBase+lastLTrim) + (+d.corr), 0, 255);
-  speedHist.push({t, speedR, speedL});
+  // speedR/speedL sekarang PWM asli yg dikirim firmware (bukan ditaksir di
+  // sini lagi) -- taksiran lama salah total di mode NODE/SEARCH (spin,
+  // salah satu roda mundur) krn cuma menghitung dari base+trim-correction,
+  // yg cuma valid utk mode TRACK/DECAY/SETTLE biasa.
+  speedHist.push({t, speedR:+d.speedR, speedL:+d.speedL});
   const cutoff = t - HIST_MS;
   adcHist = adcHist.filter(p=>p.t>=cutoff);
   pidHist = pidHist.filter(p=>p.t>=cutoff);
   speedHist = speedHist.filter(p=>p.t>=cutoff);
   updateCharts();
 }
-function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 // TCRT5000+LM393 (dikoreksi lagi setelah tes fisik ulang): LOW(0)=kena garis hitam, HIGH(1)=putih -- kotak hijau saat v===0 (kena garis)
 function US(bi,vi,v){ g(vi).textContent=v; g(bi).classList.toggle('hi', v===0); }
 
@@ -467,28 +729,15 @@ function updateCharts(){
   chartAdc.update('none'); chartPid.update('none'); chartSpeed.update('none');
 }
 
-// ================= PID TUNING =================
-function syncPair(sliderId, numId){
-  const s=g(sliderId), n=g(numId);
-  s.addEventListener('input', ()=>{ n.value=s.value; });
-  n.addEventListener('input', ()=>{ s.value=n.value; });
-}
-syncPair('Kp','KpN'); syncPair('Ki','KiN'); syncPair('Kd','KdN');
-function applyPID(){
-  W('KP:'+g('Kp').value);
-  W('KI:'+g('Ki').value);
-  W('KD:'+g('Kd').value);
-}
-
 // ================= KONTROL LAIN =================
 function SL(id,vid,cmd,onApply){
   const e=g(id);
   e.addEventListener('input', ()=>{ g(vid).textContent=e.value; if(onApply) onApply(e.value); });
   e.addEventListener('change', ()=>{ W(cmd+e.value); });
 }
-SL('SP','SPV','SPEED:', v=>{ lastBase=+v; });
-SL('LT','LTV','LTRIM:', v=>{ lastLTrim=+v; });
-SL('RT','RTV','RTRIM:', v=>{ lastRTrim=+v; });
+SL('SP','SPV','SPEED:');
+SL('LT','LTV','LTRIM:');
+SL('RT','RTV','RTRIM:');
 SL('VOL','VV','VOL:');
 
 function toggleManual(){ W(manualOn ? 'MANUAL:OFF' : 'MANUAL:ON'); }

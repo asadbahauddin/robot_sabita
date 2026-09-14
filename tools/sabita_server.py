@@ -35,7 +35,8 @@ from aiohttp import web, WSMsgType, ClientConnectorError
 SENSOR_CSV_FIELDS = [
     "recv_iso", "t_rel_s", "state", "nav_prev", "nav_curr", "nav_next", "nav_step",
     "s1", "s2", "s3", "s4", "s6",
-    "pos", "err", "corr", "kp", "ki", "kd", "arah", "last_qr",
+    "pos", "err", "corr", "mode", "speedR", "speedL", "kp", "ki", "kd", "arah", "last_qr",
+    "marker",
 ]
 
 
@@ -67,6 +68,24 @@ class Hub:
         self.rec_writer = None
         self.rec_path = None
 
+        # Marker video (fitur TANDAI): teks yang ditulis ke KOLOM "marker" pada
+        # baris CSV BERIKUTNYA yang di-log, lalu langsung dikosongkan lagi --
+        # cuma menandai satu baris, bukan status menyala terus.
+        self.pending_marker = ""
+
+        # Rekaman sesi JSON (utk fitur replay dashboard): SEMUA pesan yang
+        # diterima dari ESP32 disimpan apa adanya (satu objek JSON per baris,
+        # {"t": detik-relatif-sejak-server-start, "data": {...}}) supaya bisa
+        # diputar ulang persis seperti data live tanpa perlu ESP32 nyata.
+        log_dir = os.path.dirname(log_path)
+        self.session_path = os.path.join(log_dir, f"session_{datetime.now():%Y%m%d_%H%M%S}.json")
+        self.session_file = open(self.session_path, "a", encoding="utf-8")
+
+    def log_session_message(self, msg):
+        entry = {"t": round(asyncio.get_event_loop().time() - self.t0, 3), "data": msg}
+        self.session_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        self.session_file.flush()
+
     def start_recording(self):
         if self.rec_file:
             self.stop_recording()
@@ -94,6 +113,8 @@ class Hub:
         row = {k: msg.get(k, "") for k in SENSOR_CSV_FIELDS}
         row["recv_iso"] = datetime.now().isoformat(timespec="milliseconds")
         row["t_rel_s"] = round(asyncio.get_event_loop().time() - self.t0, 3)
+        row["marker"] = self.pending_marker
+        self.pending_marker = ""
         # state/nav diambil dari cache pesan terakhir -- keduanya jarang berubah
         # (cuma saat transisi FSM), jadi nilai ini valid mewakili konteks robot
         # pada saat sampel sensor ini diambil (mis. lagi diam ARRIVED vs MOVING).
@@ -131,6 +152,7 @@ class Hub:
 
     def close(self):
         self._csv_file.close()
+        self.session_file.close()
 
 
 # ============================================================
@@ -153,6 +175,7 @@ async def esp_link_task(hub: Hub):
                         continue
                     typ = msg.get("type", "?")
                     hub.last_by_type[typ] = msg
+                    hub.log_session_message(msg)
                     if typ == "sensor":
                         hub.log_sensor_row(msg)
                     await hub.broadcast_to_browsers(msg)
@@ -180,7 +203,13 @@ def make_app(hub: Hub, dashboard_path):
 
     async def handle_ws(request):
         wsres = web.WebSocketResponse(heartbeat=15)
-        await wsres.prepare(request)
+        try:
+            await wsres.prepare(request)
+        except ConnectionResetError:
+            # Browser memutus koneksi (refresh/tutup tab) tepat saat handshake
+            # WS berlangsung -- harmless, cuma bikin traceback berisik kalau
+            # tidak ditangkap di sini.
+            return wsres
         hub.browsers.add(wsres)
         print(f"[browser] connect (total={len(hub.browsers)})")
 
@@ -203,6 +232,16 @@ def make_app(hub: Hub, dashboard_path):
                     elif wsmsg.data == "REC:STOP":
                         hub.stop_recording()
                         await hub.broadcast_to_browsers({"type": "rec", "active": False, "file": ""})
+                    elif wsmsg.data.startswith("MARKER:"):
+                        # Ditangani di server (tidak diteruskan ke ESP32) --
+                        # teksnya ditulis ke kolom "marker" pada baris CSV
+                        # BERIKUTNYA yang di-log, buat sinkronisasi sama rekaman video.
+                        hub.pending_marker = wsmsg.data[len("MARKER:"):]
+                        await hub.broadcast_to_browsers({
+                            "type": "marker",
+                            "text": hub.pending_marker,
+                            "t": round(asyncio.get_event_loop().time() - hub.t0, 3),
+                        })
                     else:
                         await hub.send_to_esp(wsmsg.data)
                 elif wsmsg.type == WSMsgType.ERROR:
@@ -240,6 +279,7 @@ async def main_async(args):
     print(f"[log] mencatat sensor ke {log_path}")
 
     hub = Hub(args.esp_host, args.esp_port, log_path)
+    print(f"[log] rekaman sesi (replay) ke {hub.session_path}")
 
     app = make_app(hub, dashboard_path)
     runner = web.AppRunner(app)
