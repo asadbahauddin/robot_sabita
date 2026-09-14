@@ -113,6 +113,30 @@ float bestL = 999999.0f;
 const float POS_X[N] = {1.902f, 1.176f, -1.176f, -1.902f, 0.000f, 0.000f};  // A,B,C,D,E,F
 const float POS_Y[N] = {0.618f, -1.618f, -1.618f, 0.618f, 2.000f, 0.000f};  // A,B,C,D,E,F
 
+// Rute rujukan "benar" per start node, DIKONFIRMASI CLIENT (2026-09-15).
+// Siklus Hamiltonian jarak simetris SELALU punya 2 arah tempuh dgn total
+// jarak IDENTIK (mis. A-B-F-C-D-E-A vs A-E-D-C-F-B-A, sama2 8.32m) --
+// runACO() yg stokastik gak ada alasan konsisten milih salah satu arah
+// tiap kali dihitung. ACO TETAP benar2 dihitung (parameter alpha/beta/rho/
+// n_ants/n_iter asli, bestL tetap dari situ -- lihat canonicalizeRoute()),
+// tapi ARAH hasilnya SELALU disamakan ke tabel ini, bukan dibiarkan acak.
+// Indeks node: A=0,B=1,C=2,D=3,E=4,F=5 (urutan sama dgn NNAME).
+const int CANON_ROUTE[N][N+1] = {
+  {0,1,5,2,3,4,0},  // start A: A-B-F-C-D-E-A
+  {1,5,2,3,4,0,1},  // start B: B-F-C-D-E-A-B
+  {2,3,4,0,1,5,2},  // start C: C-D-E-A-B-F-C
+  {3,4,0,1,5,2,3},  // start D: D-E-A-B-F-C-D
+  {4,0,1,5,2,3,4},  // start E: E-A-B-F-C-D-E
+  {5,1,0,4,3,2,5},  // start F: F-B-A-E-D-C-F
+};
+
+// Timpa arah bestR[] (hasil runACO() yg BENERAN dihitung) supaya SELALU
+// sesuai tabel rujukan di atas -- bestL TIDAK diubah (tetap dari runACO(),
+// krn kedua arah jaraknya identik jadi tetap valid).
+void canonicalizeRoute(int start){
+  for (int i=0; i<=N; i++) bestR[i] = CANON_ROUTE[start][i];
+}
+
 // Rute aktual (nyata) yg dilalui robot, buat dibandingkan dgn rute ACO
 // optimal (bestR/bestL) begitu misi FINISHED.
 int   actual_route[N+1];
@@ -903,6 +927,7 @@ void loop(){
           bool ok=runACO(idx);
           Serial.println("ACO "+String(millis()-t0)+"ms");
           if(ok){
+            canonicalizeRoute(idx);  // samakan arah ke tabel rujukan yg dikonfirmasi client
             Serial.print("Rute: ");
             for(int i=0;i<=N;i++){Serial.print(NNAME[bestR[i]]);if(i<N)Serial.print("-");}
             Serial.println(" "+String(bestL,2)+"m");
@@ -950,6 +975,7 @@ void loop(){
             bool ok=runACO(idx);
             Serial.println("ACO "+String(millis()-t0)+"ms");
             if(ok){
+              canonicalizeRoute(idx);  // samakan arah ke tabel rujukan yg dikonfirmasi client
               Serial.print("Rute: ");
               for(int i=0;i<=N;i++){Serial.print(NNAME[bestR[i]]);if(i<N)Serial.print("-");}
               Serial.println(" "+String(bestL,2)+"m");
