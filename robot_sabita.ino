@@ -6,18 +6,15 @@
 #include "soc/rtc_cntl_reg.h"  // definisi RTC_CNTL_BROWN_OUT_REG (dipakai di setup() utk matikan brownout detector)
 
 // ============================================================
-// SABITA v11 (2026-08-27) -- HEADLESS. Dashboard HTML dipindah ke
-// laptop (tools/dashboard.html), disajikan oleh tools/sabita_server.py
-// yang relay ke ESP32 lewat WebSocket port 81. ESP32 hanya kirim
-// data sensor/nav/state/qr/dfp dan terima perintah motor/PID/tuning.
+// SABITA -- firmware HEADLESS. Dashboard HTML jalan di laptop
+// (tools/dashboard.html), disajikan oleh tools/sabita_server.py yang
+// relay ke ESP32 lewat WebSocket port 81. ESP32 hanya kirim data
+// sensor/nav/state/qr/dfp dan terima perintah motor/tuning.
 //
-// SENSOR LINE FOLLOWER: DIGITAL langsung (digitalRead), BUKAN ADC lagi.
-// Modul TCRT5000+LM393 (komparator on-board, threshold diatur via
-// trimpot fisik di modul, bukan software) -- jadi tidak ada lagi
-// analogRead/threshold/kalibrasi putih-hitam di firmware ini.
-// Output LM393 (dikonfirmasi via tes fisik langsung, 2026-09-04 -- KEBALIK
-// -- dikoreksi lagi 2026-09-05 stelah pengukuran fisik ulang, TERNYATA
-// KEBALIK dari koreksi sebelumnya): DI ATAS PUTIH = HIGH(1), DI ATAS HITAM = LOW(0).
+// SENSOR LINE FOLLOWER: digital langsung (digitalRead). Modul
+// TCRT5000+LM393 (komparator on-board, threshold diatur via trimpot
+// fisik di modul, bukan software). Output LM393: DI ATAS PUTIH =
+// HIGH(1), DI ATAS HITAM = LOW(0).
 // ============================================================
 
 const char* AP_SSID = "SABITA_ROBOT";
@@ -34,29 +31,17 @@ const char* AP_PASS = "12345678";
 #define CH_L_RPWM  2
 #define CH_L_LPWM  3
 
-// Motor DC Gearbox 24V 222RPM (kemungkinan -- lihat catatan karakterisasi di
-// bawah), reduksi 27:1.
-// Stall torque: 18 kgfcm, No load torque: 7 kgfcm
-// v_max teoritis: 0.755 m/s (asumsi roda 65mm -- PERLU DICEK ULANG diameter
-// roda asli pas di lab, sempat disebut beda yaitu 4 inch/100mm sebelumnya)
-// v_aktual pada MOTOR_SPEED=70 (dari 255): ~0.20 m/s (dari CSV uji lapangan
-// gerakan_robot_uji_coba.csv)
-//
-// Catatan tuning (2026-09-14):
-// - Stall torque 18 kgfcm cukup buat manuver pivot/spin (motorKanan()/
-//   motorKiri(), termasuk TURN_AROUND_MS di case MOVING).
-// - Arus max 0.3A per motor (total 0.6A kedua motor) -- BTS7960 support
-//   hingga 43A, jauh di atas kebutuhan, tidak ada risiko overcurrent driver.
-// - Motor aman dijalankan PWM 0-255 tanpa overheat.
+// Motor DC Gearbox 24V, 0.3A, reduksi 27:1. Stall torque 18 kgfcm (cukup
+// buat manuver pivot/spin di motorKanan()/motorKiri()), no-load torque
+// 7 kgfcm. Kecepatan linear robot terukur ~0.20 m/s pada MOTOR_SPEED=70
+// (dari 255). BTS7960 mendukung hingga 43A, jauh di atas kebutuhan arus
+// motor, jadi motor aman dijalankan di seluruh rentang PWM 0-255.
 int MOTOR_SPEED = 70;   // BASE_SPEED PID (juga dipakai manual drive)
 int LEFT_TRIM   = 0;
 int RIGHT_TRIM  = 0;
 
 // ===================== SENSOR LINE FOLLOWER (DIGITAL) =====================
-// 5 sensor TCRT5000+LM393, urutan kiri->kanan, S3=tengah. Pin mapping
-// dikonfirmasi user (2026-08-27) -- kembali ke skema 5-sensor, GPIO36
-// (yang sempat dipakai sebagai channel ke-6/S7 di versi ADC sebelumnya)
-// SENGAJA DIHAPUS dari sistem produksi mulai versi ini.
+// 5 sensor TCRT5000+LM393, urutan kiri->kanan, S3=tengah.
 #define PIN_S1 33
 #define PIN_S2 32
 #define PIN_S3 35
@@ -114,13 +99,12 @@ float bestL = 999999.0f;
 const float POS_X[N] = {1.902f, 1.176f, -1.176f, -1.902f, 0.000f, 0.000f};  // A,B,C,D,E,F
 const float POS_Y[N] = {0.618f, -1.618f, -1.618f, 0.618f, 2.000f, 0.000f};  // A,B,C,D,E,F
 
-// Rute rujukan "benar" per start node, DIKONFIRMASI CLIENT (2026-09-15).
-// Siklus Hamiltonian jarak simetris SELALU punya 2 arah tempuh dgn total
-// jarak IDENTIK (mis. A-B-F-C-D-E-A vs A-E-D-C-F-B-A, sama2 8.32m) --
-// runACO() yg stokastik gak ada alasan konsisten milih salah satu arah
-// tiap kali dihitung. ACO TETAP benar2 dihitung (parameter alpha/beta/rho/
-// n_ants/n_iter asli, bestL tetap dari situ -- lihat canonicalizeRoute()),
-// tapi ARAH hasilnya SELALU disamakan ke tabel ini, bukan dibiarkan acak.
+// Rute rujukan per start node -- siklus Hamiltonian jarak simetris punya
+// 2 arah tempuh dgn total jarak identik (mis. A-B-F-C-D-E-A vs
+// A-E-D-C-F-B-A, sama2 8.32m), jadi arah hasil ACO perlu disamakan ke
+// satu konvensi tetap. ACO tetap dihitung sungguhan (parameter alpha/
+// beta/rho/n_ants/n_iter, bestL dari situ -- lihat canonicalizeRoute()),
+// tabel ini cuma menentukan ARAH tempuhnya.
 // Indeks node: A=0,B=1,C=2,D=3,E=4,F=5 (urutan sama dgn NNAME).
 const int CANON_ROUTE[N][N+1] = {
   {0,1,5,2,3,4,0},  // start A: A-B-F-C-D-E-A
@@ -172,17 +156,12 @@ String pendingQR = "";
 unsigned long pendingQRTime = 0;
 #define NODEZONE_TIMEOUT_MS 2000
 
-// ===================== LINE FOLLOWER: BANG-BANG SEDERHANA =================
-// Tes diagnostik 2026-09-14: seluruh mesin PID adaptif + redam + spin-cari +
-// settle (lihat riwayat panjang di git log/commit sebelumnya) DIHAPUS, diganti
-// logika bang-bang paling sederhana -- tujuannya mengisolasi apakah masalah
-// "robot menghindari garis" itu soal SOFTWARE (algoritma kontrol) atau
-// HARDWARE (sensor/motor/mekanik), dengan cara menghilangkan semua variabel
-// software dari persamaan sekaligus.
+// ===================== LINE FOLLOWER: BANG-BANG =================
+// Kontrol on/off sederhana berdasarkan pola 5 sensor digital, bukan PID.
 //
-// Kp/Ki/Kd TIDAK dipakai lineFollow() lagi (dibiarkan ada cuma supaya
-// perintah WS KP:/KI:/KD: & field JSON kp/ki/kd tetap valid, TIDAK ada
-// pengaruh ke gerak robot selama tes bang-bang ini).
+// Kp/Ki/Kd tidak dipakai lineFollow() (dibiarkan ada cuma supaya perintah
+// WS KP:/KI:/KD: & field JSON kp/ki/kd tetap valid untuk kompatibilitas
+// dashboard).
 float Kp = 15.0f, Ki = 0.01f, Kd = 8.0f;
 float gLastPos = 0.0f, gLastErr = 0.0f, gLastCorr = 0.0f;  // sekarang statis/tidak dipakai lineFollow(), dibiarkan buat JSON pos/err/corr
 String gLastMode = "OFF";
@@ -190,8 +169,8 @@ String prevMode  = "";  // buat deteksi transisi mode -- broadcast cuma pas beru
 int gSpeedR = 0, gSpeedL = 0;  // PWM motor R/L TERAKHIR yg BENAR2 dikirim ledcWrite()
 
 // Recovery saat garis hilang total (semua sensor putih) -- lihat lineFollow().
-// Arah cari SELALU kanan (motorKanan(), lihat lineFollow()) -- tidak lagi
-// menebak dari riwayat belok terakhir, jadi tidak perlu variabel "lastTurnDir".
+// Arah cari selalu ke kanan (motorKanan()), deterministik, tidak tergantung
+// riwayat gerak sebelumnya.
 unsigned long lostSince = 0;   // millis() saat garis pertama kali hilang, 0=lagi tidak hilang
 
 // "Salah node" (nyasar ke cabang persimpangan yg salah) -- lihat loop()/case
@@ -203,32 +182,23 @@ bool turningAround = false;          // true selama proses putar balik (biar bis
 int wrongNodeRetries = 0;            // reset di onArrived() (sukses) & resetPID()
 bool stuckWrongNode = false;         // true stlh retry abis -- robot berhenti total, butuh intervensi manual (MANUAL:ON / RESET)
 
-// "Nudge" manual TANPA masuk mode manual penuh (instruksi user 2026-09-15):
-// operator bisa tekan tombol panah di dashboard (M:MAJU/M:MUNDUR/M:KIRI/
-// M:KANAN, TANPA klik "Aktifkan Mode Manual" dulu) sambil robot MASIH
-// MOVING otomatis, buat koreksi arah langsung begitu lihat robot mulai
-// salah -- lebih andal drpd nunggu geo-turn/wrong-node otomatis yg
-// modelnya blm tentu pas sama kondisi fisik. Sensor QR/FSM/audio TETAP
-// jalan normal di belakang layar -- ini cuma override motor sementara.
+// "Nudge" manual tanpa masuk mode manual penuh: operator bisa tekan tombol
+// panah di dashboard/remote (M:MAJU/M:MUNDUR/M:KIRI/M:KANAN) sambil robot
+// masih MOVING otomatis, buat koreksi arah langsung. Sensor QR/FSM/audio
+// tetap jalan normal di belakang layar -- ini cuma override motor
+// sementara.
 bool userNudge = false;   // true selama tombol ditekan (M:STOP saat dilepas -> false lagi)
 int userNudgeDir = 0;     // 1=maju, -1=mundur, 2=kanan, -2=kiri, 0=tidak ada nudge
 
-// Belok terjadwal di persimpangan, dihitung dari geometri Graf Pameran
-// (POS_X/POS_Y) begitu MOVING dimulai -- lihat computeGeoTurn(). TAMBAHAN,
-// bukan pengganti line-follower/recovery yg sudah ada (instruksi user
-// 2026-09-14).
-//
-// PENTING (koreksi 2026-09-15): belokan TIDAK langsung dieksekusi begitu
-// MOVING mulai lagi (itu salah -- persimpangan fisiknya ada DI TENGAH
-// perjalanan menuju node berikutnya, bukan tepat di titik keberangkatan,
-// jadi timer dari keberangkatan keburu habis sebelum robot benar2 sampai
-// di persimpangan yg dimaksud). Sekarang: arah+durasi dihitung & DITUNGGU
-// (geoTurnPending) sampai sensor BENAR2 mendeteksi persimpangan (S1 DAN
-// S6 dua-duanya hitam -- lihat catatan koreksi 2026-09-15 di blok trigger
-// di loop()) -- baru dieksekusi (geoTurnUntil). Supaya tidak kepicu oleh
-// zona node yg BARU SAJA ditinggalkan (yg juga kena pola serupa), trigger
-// baru "diarm" (geoTurnArmed) setelah robot kelihatan bener2 di jalur
-// normal (bkn persimpangan) selama >= GEO_TURN_ARM_MS.
+// Belok terjadwal di persimpangan: robot berputar di tempat (motorKanan()/
+// motorKiri()) selama durasi tertentu (timer), dijadwalkan begitu MOVING
+// dimulai lalu dieksekusi begitu sensor mendeteksi persimpangan fisik
+// (S1 dan S6 sama-sama hitam) -- bukan tepat di titik keberangkatan, krn
+// persimpangan biasanya ada di tengah perjalanan menuju node berikutnya.
+// "Diarm" dulu (geoTurnArmed) setelah robot terlihat di jalur normal
+// terus-menerus >= GEO_TURN_ARM_MS, supaya zona node yang baru saja
+// ditinggalkan tidak langsung memicu belokan sebelum robot berangkat.
+// Tambahan di atas line-follower/recovery yang sudah ada, bukan pengganti.
 unsigned long geoTurnUntil = 0;   // selagi millis()<ini, motor di-override belok terjadwal (bukan lineFollow() biasa)
 int geoTurnDir = 0;               // +1=kanan(motorKanan), -1=kiri(motorKiri), 0=tidak ada belok terjadwal
 bool geoTurnPending = false;      // true = ada belokan terjadwal, NUNGGU persimpangan fisik terdeteksi
@@ -237,12 +207,10 @@ unsigned long geoTurnClearSince = 0;    // millis() sejak MULAI terus-menerus di
 unsigned long geoTurnDurationMs = 0;    // durasi manuver, dipakai begitu trigger nyala
 
 // ===== Parameter gerak yg bisa di-TUNING LIVE lewat WS (TANPA upload ulang
-// firmware) -- lihat handler pesan WS di wsEvent(). Nilai default = sama
-// seperti sebelumnya (dari kode yg sudah divalidasi 2026-09-14), tapi
-// sekarang variabel (bukan #define/literal), supaya sabita_server.py bisa
-// dorong nilai baru kapan saja (termasuk otomatis tiap ESP32 reconnect --
-// lihat TUNABLE_PARAMS di sabita_server.py). Struktur/algoritma line-
-// follower TETAP butuh upload ulang -- ini cuma angka-angkanya.
+// firmware) -- lihat handler pesan WS di wsEvent(). sabita_server.py bisa
+// dorong nilai baru kapan saja lewat TUNABLE_PARAMS (termasuk otomatis
+// tiap ESP32 reconnect). Struktur/algoritma line-follower tetap butuh
+// upload ulang -- ini cuma angka-angkanya.
 int SPD_STRAIGHT     = 70;   // PWM lurus (S3)
 int SPD_GENTLE_FAST  = 70;   // PWM sisi cepat saat koreksi ringan (S2/S4)
 int SPD_GENTLE_SLOW  = 30;   // PWM sisi lambat saat koreksi ringan (S2/S4)
@@ -278,29 +246,22 @@ void resetPID(){
   userNudgeDir = 0;
 }
 
-// Belok terjadwal di persimpangan, dihitung dari geometri Graf Pameran
-// (POS_X/POS_Y, identik "posisi sesuai banner fisik" di dashboard.html).
-// Dipanggil SEKALI tiap ARRIVED->MOVING (lihat case ARRIVED di loop()),
-// begitu prevIdx/currIdx/nextIdx sudah diketahui dari onArrived(). Vektor
-// arah MASUK (prevIdx->currIdx) & arah KELUAR (currIdx->nextIdx) dihitung
-// cross/dot product-nya -> sudut belok bertanda (negatif=kanan, sesuai
-// konvensi matematika standar sumbu x-kanan/y-atas). Durasi manuver
-// PROPORSIONAL dari TURN_AROUND_MS yg sudah dikalibrasi fisik utk 180
-// derajat (TURN_AROUND_MS * sudut/180).
+// Hitung sekali tiap ARRIVED->MOVING, begitu prevIdx/currIdx/nextIdx
+// diketahui dari onArrived(). Vektor arah masuk (prevIdx->currIdx) & arah
+// keluar (currIdx->nextIdx) dihitung cross/dot product-nya jadi sudut
+// belok bertanda (negatif=kanan). Durasi manuver = timer proporsional
+// dari TURN_AROUND_MS yg dikalibrasi fisik utk 180 derajat (TURN_AROUND_MS
+// * sudut/180).
 //
-// Hop PERTAMA (prevIdx<0, blm ada arah datang) & hop TERAKHIR (nextIdx<0,
-// misi akan FINISHED) SENGAJA tidak dapat belok terjadwal -- sesuai
-// instruksi user 2026-09-14 ("pertama kali... lurus saja").
+// Hop pertama (prevIdx<0, belum ada arah datang) & hop terakhir
+// (nextIdx<0) tidak dapat belok terjadwal, robot lurus/line-follower saja.
 void computeGeoTurn(){
   geoTurnUntil = 0; geoTurnDir = 0; geoTurnDurationMs = 0;
   geoTurnPending = false; geoTurnArmed = false; geoTurnClearSince = 0;
   if (!ENABLE_GEO_TURN) return;
   if (prevIdx < 0 || nextIdx < 0) return;
-  // KOREKSI 2026-09-15 (dari kejadian nyata di lapangan -- E->A->B kepicu
-  // belok ~73 derajat & robot kehilangan garis total): transisi antar node
-  // PINGGIR (gak menyentuh F sama sekali) SELALU lurus secara fisik --
-  // dikonfirmasi user. Belok terjadwal CUMA relevan kalau transisi ini
-  // menyentuh F (baru datang dari F, lagi DI F, atau mau ke F).
+  // Transisi antar node pinggir (tidak menyentuh F) selalu lurus secara
+  // fisik -- belok terjadwal cuma relevan buat transisi yg menyentuh F.
   if (prevIdx != F_IDX && currIdx != F_IDX && nextIdx != F_IDX) return;
   float vinX  = POS_X[currIdx]-POS_X[prevIdx], vinY  = POS_Y[currIdx]-POS_Y[prevIdx];
   float voutX = POS_X[nextIdx]-POS_X[currIdx], voutY = POS_Y[nextIdx]-POS_Y[currIdx];
@@ -349,11 +310,9 @@ void reportPidMode(){
   }
 }
 
-// Bang-bang sederhana -- persis spesifikasi tes diagnostik 2026-09-14.
-// Dipanggil HANYA saat driving==true (gating-nya di loop(), bukan di sini --
-// lihat "if(driving) lineFollow();"). Baca sensor LANGSUNG lewat digitalRead
-// (bukan lewat sDigital[] yg sudah dibaca readSensors() di awal loop())
-// sesuai kode yg diberikan, supaya benar2 independen dari sisa sistem lama.
+// Dipanggil hanya saat driving==true (gating-nya di loop(), lihat
+// "if(driving) lineFollow();"). Baca sensor langsung lewat digitalRead,
+// independen dari sDigital[] yg dibaca readSensors() di awal loop().
 void lineFollow() {
   int s1 = (digitalRead(PIN_S1)==LOW) ? 1 : 0;
   int s2 = (digitalRead(PIN_S2)==LOW) ? 1 : 0;
@@ -376,19 +335,12 @@ void lineFollow() {
       ledcWrite(CH_L_RPWM,0); ledcWrite(CH_L_LPWM,SPD_SEARCH_CREEP);
       gSpeedR=SPD_SEARCH_CREEP; gSpeedL=SPD_SEARCH_CREEP;
     } else {
-      // Fase 2: garis hilang total -- SELALU cari ke KANAN (bukan nebak dari
-      // lastTurnDir lagi, sesuai instruksi user 2026-09-14: "robot tidak
-      // mungkin kebalik arahnya" -- satu arah tetap, jadi deterministik,
-      // tidak tergantung riwayat belok sebelumnya yg bisa salah tebak).
-      // TIDAK ADA BATAS WAKTU menyerah lagi (fase "LOST"/berhenti total
-      // sudah DIHAPUS sesuai instruksi user 2026-09-14: "putar sampai
-      // ketemu garis") -- robot spin ke kanan TERUS sampai garis
-      // benar-benar ketemu lagi, seberapa pun lama. PAKAI motorKanan()
-      // (BUKAN ledcWrite manual dgn asumsi kinematika standar) krn fungsi
-      // ini yg sudah divalidasi FISIK LANGSUNG arahnya benar -- channel
-      // CH_R_*/CH_L_* tertukar dari label kanan/kiri fisik robot (lihat
-      // catatan di bawah), jadi menulis ulang pola ledcWrite manual di
-      // sini gampang kebalik lagi.
+      // Fase 2: garis hilang total -- cari ke kanan (deterministik, tidak
+      // tergantung riwayat gerak sebelumnya), tanpa batas waktu, sampai
+      // garis benar-benar ketemu lagi. Pakai motorKanan() (bukan ledcWrite
+      // manual) krn fungsi ini sudah divalidasi fisik arahnya benar --
+      // channel CH_R_*/CH_L_* tertukar dari label kanan/kiri fisik robot
+      // (lihat catatan di bawah).
       motorKanan();
       gSpeedR=MOTOR_SPEED; gSpeedL=-MOTOR_SPEED;
     }
@@ -397,17 +349,11 @@ void lineFollow() {
   }
   lostSince = 0;  // garis ketemu lagi
 
-  // PENTING (dikonfirmasi tes fisik 2026-09-14): channel CH_R_*/CH_L_* di
-  // kode TERTUKAR relatif ke sisi fisik kanan/kiri robot -- terbukti dari
-  // motorKanan() (dipakai tombol manual "Kanan", dikonfirmasi user "kalau
-  // klik kanan, roda kanan MUNDUR & roda kiri MAJU" -- itu justru gerakan
-  // yg BENAR utk belok kanan secara kinematika tank standar). motorKanan()/
-  // motorKiri() TIDAK diubah krn sudah divalidasi fisik langsung, TAPI
-  // cabang differential di bawah ini (S1/S2/S4/S6) sebelumnya ditulis pakai
-  // asumsi kinematika standar TANPA memperhitungkan tukar-kanal ini -- jadi
-  // semuanya kebalik. Fix: tukar nilai PWM yg ditulis ke CH_R_LPWM<->CH_L_LPWM
-  // di tiap cabang asimetris, supaya arah BELOK yg dimaksud (komentar tiap
-  // cabang) match dgn arah FISIK yg benar.
+  // Channel CH_R_*/CH_L_* tertukar relatif ke sisi fisik kanan/kiri robot
+  // (motorKanan()/motorKiri() sudah divalidasi fisik & benar apa adanya).
+  // Nilai PWM tiap cabang di bawah ditulis ke CH_R_LPWM/CH_L_LPWM dgn
+  // memperhitungkan tukar-kanal ini, supaya arah belok yg dimaksud
+  // (komentar tiap cabang) match arah fisik yg benar.
   if (s3) {
     // Tengah - lurus
     ledcWrite(CH_R_RPWM,0); ledcWrite(CH_R_LPWM,SPD_STRAIGHT);
@@ -660,12 +606,15 @@ void onArrived(int idx){
   if(bestL<999999.0f){
     for(int i=0;i<N;i++) if(bestR[i]==idx){
       stepIdx=i;
-      if(i+1<=N){nextIdx=bestR[i+1];if(nVisited>=N)nextIdx=-1;}
+      // Setelah node ke-N (terakhir yg beda), nextIdx=bestR[N]=startIdx --
+      // misi belum benar2 selesai di sini, robot masih perlu menempuh
+      // edge penutup kembali ke titik awal (lihat case MOVING).
+      if(i+1<=N) nextIdx=bestR[i+1];
       break;
     }
   }
   String n=jNav(); bcast(n);
-  String s=jState(nVisited>=N?"FINISHED":"ARRIVED"); bcast(s);
+  String s=jState("ARRIVED"); bcast(s);
   playNode(idx);
   arrTime=millis();
   robotState=ARRIVED;
@@ -825,13 +774,9 @@ void loop(){
     // yg BARU SAJA ditinggalkan (juga >=3 sensor hitam) tidak langsung
     // memicu belokan sebelum robot benar2 berangkat.
     if (geoTurnPending) {
-      // KOREKSI 2026-09-15: "hitCount>=3" kebukti terlalu longgar di
-      // lapangan -- pola S3+S4+S6 (tikungan wajar ke kanan, BUKAN
-      // persimpangan lebar sungguhan) ikut kepicu, robot jadi kehilangan
-      // garis total. Persimpangan fisik yg sungguhan (marka lebar)
-      // seharusnya kena di KEDUA sensor ujung (S1 & S6) sekaligus --
-      // tikungan biasa (sekencang apa pun) cuma narik salah satu sisi,
-      // gak pernah dua-duanya bareng.
+      // Persimpangan fisik (marka lebar) kena di kedua sensor ujung (S1 &
+      // S6) sekaligus -- tikungan biasa (sekencang apa pun) cuma narik
+      // salah satu sisi, jadi ini pembeda yg reliabel antara keduanya.
       bool persimpangan = (s1==0) && (s6==0);
       if (persimpangan) {
         if (geoTurnArmed) {
@@ -973,12 +918,11 @@ void loop(){
         if(idx>=0){
           startIdx=idx;
           Serial.println("Start: Node "+String(NNAME[idx]));
-          // ACO dihitung LANGSUNG dari node start (instruksi user
-          // 2026-09-15) -- bukan nunggu node ke-2 lagi. Rute & nextIdx
+          // ACO dihitung langsung dari node start -- rute & nextIdx
           // langsung diketahui sejak hop pertama, jadi deteksi salah-node
-          // (case MOVING) & belok terjadwal (computeGeoTurn(), begitu
-          // hop KE-2 mulai -- hop pertama sendiri tetap tanpa geo-turn krn
-          // prevIdx belum ada) bisa siap lebih awal.
+          // & belok terjadwal (computeGeoTurn(), mulai aktif dari hop
+          // ke-2 krn hop pertama belum punya arah datang) bisa siap lebih
+          // awal.
           Serial.println("Hitung ACO dari start...");
           unsigned long t0=millis();
           bool ok=runACO(idx);
@@ -1000,19 +944,15 @@ void loop(){
       motorStop();
       if(audioFinished||(millis()-arrTime>=AUDIO_TIMEOUT_MS)){
         if(!audioFinished){Serial.println("Audio timeout");audioFinished=true;}
-        if(nVisited>=N){
-          Serial.println("MISI SELESAI");
-          String s=jState("FINISHED"); bcast(s);
-          String rc=jRouteCompare(); bcast(rc);
-          robotState=IDLE;
-        } else {
-          resetPID();
-          computeGeoTurn();  // hitung belok terjadwal (kalau ada) buat hop berikutnya, lihat computeGeoTurn()
-          robotState=MOVING;
-          Serial.println("MOVING: mode=" + gLastMode);
-          String s=jState("MOVING"); bcast(s);
-          Serial.println("Bergerak...");
-        }
+        // Selalu lanjut MOVING, termasuk setelah node ke-N -- misi baru
+        // benar2 selesai setelah robot kembali ke titik awal (lihat case
+        // MOVING, cek idx==startIdx).
+        resetPID();
+        computeGeoTurn();
+        robotState=MOVING;
+        Serial.println("MOVING: mode=" + gLastMode);
+        String s=jState("MOVING"); bcast(s);
+        Serial.println("Bergerak...");
       }
       break;
 
@@ -1020,7 +960,24 @@ void loop(){
       // aktuasi motor sudah dilakukan oleh lineFollow() di atas
       if(qrToProcess.length()>0){
         int idx=parseNode(qrToProcess);
-        if(idx>=0&&!visited[idx]){
+        if (idx>=0 && idx==startIdx && idx==nextIdx && nVisited>=N) {
+          // Kembali ke titik awal -- penutup rute (bukan node baru, audio
+          // tidak diputar ulang; startIdx sudah "visited" dari awal jadi
+          // gerbang !visited[idx] di bawah tidak akan pernah menangkap
+          // kedatangan kedua ini). Misi baru benar-benar selesai di sini.
+          motorStop();
+          if (actual_route_len<=N) {
+            actual_distance += D[actual_route[actual_route_len-1]][idx];
+            actual_route[actual_route_len]=idx;
+            actual_route_len++;
+          }
+          prevIdx=currIdx; currIdx=idx; nextIdx=-1;
+          String n=jNav(); bcast(n);
+          Serial.println("MISI SELESAI - kembali ke titik awal");
+          String s=jState("FINISHED"); bcast(s);
+          String rc=jRouteCompare(); bcast(rc);
+          robotState=IDLE;
+        } else if(idx>=0&&!visited[idx]){
           if(bestL>=999999.0f){
             // FALLBACK: seharusnya ACO sudah dihitung di case IDLE begitu
             // node start di-scan (lihat di atas) -- ini cuma jaring

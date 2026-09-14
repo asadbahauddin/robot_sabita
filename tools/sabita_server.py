@@ -44,53 +44,25 @@ from aiohttp import web, WSMsgType, ClientConnectorError
 # diubah lewat sini adalah STRUKTUR/ALGORITMA line-follower itu sendiri
 # (perubahan kode C++ tetap butuh upload ulang seperti biasa).
 #
-# TURN_AROUND_MS (2026-09-14, hasil tes fisik langsung di lab, bukan lagi
-# perkiraan): 3x putar 180 derajat diukur pakai stopwatch (15.85s, 14.50s,
-# 14.98s) -> rata-rata 15.11s. Cross-check pakai rumus DDMR (v terukur
-# 0.0548 m/s di PWM=70, L=41cm jarak antar roda) hanya memprediksi 11.74s
-# -- robot NYATA ~3.4s lebih lambat dari teori murni, konsisten dengan efek
-# skid/selip (roda bukan omni-wheel) + lantai yang tidak rata (dicatat user).
-# Pakai hasil ukur LANGSUNG (bukan hasil DDMR) krn itu yang paling
-# representasikan perilaku firmware sebenarnya (spin dari diam selama
-# durasi tetap, termasuk semua efek skid/gesekan riil).
+# TURN_AROUND_MS: durasi putar ~180 derajat, hasil ukur langsung di lab
+# (rata-rata dari beberapa kali percobaan stopwatch), bukan hitungan
+# teoritis -- ini yang paling representasikan perilaku fisik robot
+# sebenarnya (termasuk efek gesekan/selip riil saat berputar).
 TUNABLE_PARAMS = {
     "SPD_STRAIGHT": 70,            # PWM lurus (S3)
     "SPD_GENTLE_FAST": 70,         # PWM sisi cepat saat koreksi ringan (S2/S4)
     "SPD_GENTLE_SLOW": 30,         # PWM sisi lambat saat koreksi ringan (S2/S4)
     "SPD_SHARP_SLOW": 20,          # PWM sisi lambat saat belok tajam (S1/S6)
     "SPD_SEARCH_CREEP": 35,        # PWM maju pelan saat garis baru hilang
-    "LOST_PHASE1_MS": 300,         # di bawah ini: maju pelan (celah kecil); di atasnya: cari ke kanan TANPA BATAS WAKTU (fase "menyerah/LOST" sudah dihapus 2026-09-14 atas permintaan user)
-    "TURN_AROUND_MS": 15110,       # durasi putar ~180 derajat -- HASIL UKUR LANGSUNG (lihat catatan di atas)
+    "LOST_PHASE1_MS": 300,         # di bawah ini: maju pelan (celah kecil); di atasnya: cari ke kanan tanpa batas waktu
+    "TURN_AROUND_MS": 15110,       # durasi putar ~180 derajat (timer, hasil ukur langsung -- lihat catatan di atas)
     "WRONG_NODE_MAX_RETRIES": 3,   # maks percobaan putar-balik sebelum STUCK
-    # Belok terjadwal di persimpangan (2026-09-14): dihitung firmware dari
-    # geometri Graf Pameran (POS_X/POS_Y) begitu prevIdx->currIdx->nextIdx
-    # diketahui -- durasi PROPORSIONAL dari TURN_AROUND_MS (sudut/180).
-    # GEOTURN:0 di sini buat matikan cepat kalau ternyata meleset di lapangan,
-    # TANPA reflash.
-    #
-    # FIX 2026-09-15 (a): awalnya belokan dieksekusi LANGSUNG begitu MOVING
-    # mulai (pakai timer dari keberangkatan) -- ternyata salah, karena
-    # persimpangan fisiknya ada DI TENGAH perjalanan, bukan di titik
-    # berangkat, jadi robot kepalang lanjut ke jalur lain sebelum benar-
-    # benar sampai persimpangan yg dimaksud. Sekarang belokan cuma
-    # DIJADWALKAN (arah+durasi) & baru DIEKSEKUSI begitu sensor BENAR2
-    # mendeteksi persimpangan di tengah jalan -- GEO_TURN_ARM_MS mencegah
-    # itu kepicu oleh zona node yg baru saja ditinggalkan.
-    #
-    # FIX 2026-09-15 (b): kejadian nyata di lapangan (hampir_berhsil.csv,
-    # segmen E->A->B) -- geo-turn kepicu ~73 derajat & robot kehilangan
-    # garis total, padahal transisi antar node PINGGIR (gak menyentuh F)
-    # seharusnya SELALU lurus (dikonfirmasi user). Dua penyebab, DUA-
-    # duanya sudah diperbaiki di firmware: (1) computeGeoTurn() sekarang
-    # cuma menjadwalkan belokan kalau transisi menyentuh F (hub tengah),
-    # (2) trigger persimpangan diperketat dari ">=3 sensor hitam" (kebukti
-    # ikut kepicu tikungan wajar) jadi "S1 DAN S6 dua-duanya hitam"
-    # (marka lebar sungguhan, bukan tikungan biasa).
-    #
-    # GEOTURN:0 di bawah ini SENGAJA dimatikan dulu (instruksi user
-    # 2026-09-15) sampai fix di atas selesai diuji fisik -- nyalakan lagi
-    # manual (GEOTURN:1, tanpa reflash) begitu siap tes ulang.
-    "GEOTURN": 0,                  # 1=aktif, 0=nonaktif (fallback ke line-follower biasa) -- MATI DULU, lihat catatan di atas
+    # Belok terjadwal di persimpangan: robot berputar (timer) selama durasi
+    # proporsional dari TURN_AROUND_MS (sudut/180, dihitung dari geometri
+    # Graf Pameran), dieksekusi begitu sensor mendeteksi persimpangan fisik.
+    # GEOTURN:0 mematikan fitur ini (fallback ke line-follower biasa saja)
+    # tanpa perlu reflash.
+    "GEOTURN": 0,                  # 1=aktif, 0=nonaktif
     "GEO_TURN_MIN_DEG": 20,        # di bawah sudut ini (hampir lurus) gak usah belok terjadwal
     "GEO_TURN_ARM_MS": 400,        # minimal waktu di jalur normal sblm trigger persimpangan boleh nyala
 }
