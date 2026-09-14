@@ -7,18 +7,16 @@
 <style>
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent;
     -webkit-user-select:none; user-select:none; touch-action:none; }
-html,body { width:100%; height:100%; overflow:hidden; background:#0f1117; font-family:'Segoe UI',sans-serif; }
+html,body { width:100%; height:100%; overflow:hidden; background:#000; font-family:'Segoe UI',sans-serif; }
 .wrap { display:flex; width:100vw; height:100vh; }
 .btn { flex:1; display:flex; align-items:center; justify-content:center;
-       color:#fff; transition:filter .08s, transform .08s; }
-.btn.active { filter:brightness(1.35); transform:scale(0.98); }
-#kiri  { background:#f59e0b; }
-#kanan { background:#2563eb; }
+       background:#000; color:#262626; transition:background .08s; }
+.btn.active { background:#0a0a0a; }
+#kiri  { border-right:1px solid #141414; }
 .arrow { font-size:min(28vw,180px); line-height:1; font-weight:900; }
 #status { position:fixed; top:10px; left:50%; transform:translateX(-50%);
-          width:14px; height:14px; border-radius:50%; background:#ef4444; z-index:10;
-          box-shadow:0 0 0 3px rgba(0,0,0,.25); }
-#status.on { background:#22c55e; }
+          width:8px; height:8px; border-radius:50%; background:#141414; z-index:10; }
+#status.on { background:#333; }
 </style>
 </head>
 <body>
