@@ -844,10 +844,22 @@ void loop(){
         if(idx>=0){
           startIdx=idx;
           Serial.println("Start: Node "+String(NNAME[idx]));
-          // Belum hitung ACO -- arah gerak robot dari titik ini belum
-          // diketahui (bisa ke tetangga mana saja). Tunggu node ke-2
-          // (di case MOVING) baru rute dihitung, menyesuaikan arah gerak
-          // alami robot alih-alih menebak buta dari node pertama.
+          // ACO dihitung LANGSUNG dari node start (instruksi user
+          // 2026-09-15) -- bukan nunggu node ke-2 lagi. Rute & nextIdx
+          // langsung diketahui sejak hop pertama, jadi deteksi salah-node
+          // (case MOVING) & belok terjadwal (computeGeoTurn(), begitu
+          // hop KE-2 mulai -- hop pertama sendiri tetap tanpa geo-turn krn
+          // prevIdx belum ada) bisa siap lebih awal.
+          Serial.println("Hitung ACO dari start...");
+          unsigned long t0=millis();
+          bool ok=runACO(idx);
+          Serial.println("ACO "+String(millis()-t0)+"ms");
+          if(ok){
+            Serial.print("Rute: ");
+            for(int i=0;i<=N;i++){Serial.print(NNAME[bestR[i]]);if(i<N)Serial.print("-");}
+            Serial.println(" "+String(bestL,2)+"m");
+            String rt=jRoute(); bcast(rt);
+          }
           onArrived(idx);
         }
       }
@@ -880,10 +892,11 @@ void loop(){
         int idx=parseNode(qrToProcess);
         if(idx>=0&&!visited[idx]){
           if(bestL>=999999.0f){
-            // Node KE-2 -- baru sekarang kita tahu robot secara alami
-            // bergerak dari startIdx ke sini. Hitung ACO mulai dari node
-            // ini (bukan dari startIdx) supaya rute yang ditampilkan
-            // konsisten dengan arah gerak nyata robot.
+            // FALLBACK: seharusnya ACO sudah dihitung di case IDLE begitu
+            // node start di-scan (lihat di atas) -- ini cuma jaring
+            // pengaman kalau runACO() di sana somehow gagal (buildRoute()
+            // gak nemu rute valid utk semua semut), coba hitung ulang
+            // dari node ke-2 ini.
             Serial.println("Node ke-2: "+String(NNAME[idx])+". Hitung ACO dari sini...");
             unsigned long t0=millis();
             bool ok=runACO(idx);
