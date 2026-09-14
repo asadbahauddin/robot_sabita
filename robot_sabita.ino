@@ -106,6 +106,13 @@ float tau[N][N];
 int   bestR[N+1];
 float bestL = 999999.0f;
 
+// Posisi (x,y) tiap node -- IDENTIK dgn "Graf Pameran (posisi sesuai banner
+// fisik)" di dashboard.html & POS di simulasi/sabita_topology.py. Dipakai
+// computeGeoTurn() buat menghitung arah belok di tiap node dari geometri
+// nyata (bukan tabel manual per-edge) -- lihat computeGeoTurn().
+const float POS_X[N] = {1.902f, 1.176f, -1.176f, -1.902f, 0.000f, 0.000f};  // A,B,C,D,E,F
+const float POS_Y[N] = {0.618f, -1.618f, -1.618f, 0.618f, 2.000f, 0.000f};  // A,B,C,D,E,F
+
 // Rute aktual (nyata) yg dilalui robot, buat dibandingkan dgn rute ACO
 // optimal (bestR/bestL) begitu misi FINISHED.
 int   actual_route[N+1];
@@ -171,6 +178,13 @@ bool turningAround = false;          // true selama proses putar balik (biar bis
 int wrongNodeRetries = 0;            // reset di onArrived() (sukses) & resetPID()
 bool stuckWrongNode = false;         // true stlh retry abis -- robot berhenti total, butuh intervensi manual (MANUAL:ON / RESET)
 
+// Belok terjadwal di persimpangan, dihitung dari geometri Graf Pameran
+// (POS_X/POS_Y) begitu MOVING dimulai -- lihat computeGeoTurn(). TAMBAHAN,
+// bukan pengganti line-follower/recovery yg sudah ada (instruksi user
+// 2026-09-14).
+unsigned long geoTurnUntil = 0;  // selagi millis()<ini, motor di-override belok terjadwal (bukan lineFollow() biasa)
+int geoTurnDir = 0;              // +1=kanan(motorKanan), -1=kiri(motorKiri), 0=tidak ada belok terjadwal
+
 // ===== Parameter gerak yg bisa di-TUNING LIVE lewat WS (TANPA upload ulang
 // firmware) -- lihat handler pesan WS di wsEvent(). Nilai default = sama
 // seperti sebelumnya (dari kode yg sudah divalidasi 2026-09-14), tapi
@@ -186,6 +200,8 @@ int SPD_SEARCH_CREEP = 35;   // PWM maju pelan saat garis baru hilang (< LOST_PH
 unsigned long LOST_PHASE1_MS = 300;    // di bawah ini sejak garis hilang: maju pelan (mungkin cuma celah kecil); di atasnya: cari ke kanan TANPA BATAS WAKTU
 unsigned long TURN_AROUND_MS = 900;    // durasi putar ~180 derajat, OPEN-LOOP (tdk ada sensor arah) -- HASIL TES FISIK (waktu 360 derajat / 2)
 int WRONG_NODE_MAX_RETRIES   = 3;      // biar gak puter2 selamanya kalau memang salah terus
+bool  ENABLE_GEO_TURN   = true;   // matikan cepat lewat Python (GEOTURN:0) kalau ternyata meleset, TANPA reflash -- lihat computeGeoTurn()
+float GEO_TURN_MIN_DEG  = 20.0f;  // di bawah sudut ini (hampir lurus) TIDAK usah belok terjadwal, biarkan lineFollow() saja
 
 // Diset true saat QR ter-scan ketika robotState==MOVING (di loop()); dipakai
 // buat pelan-pelan sesaat sebelum sampai node. Direset di onArrived().
@@ -200,6 +216,39 @@ void resetPID(){
   turningAround = false;
   wrongNodeRetries = 0;
   stuckWrongNode = false;
+  geoTurnUntil = 0;
+  geoTurnDir = 0;
+}
+
+// Belok terjadwal di persimpangan, dihitung dari geometri Graf Pameran
+// (POS_X/POS_Y, identik "posisi sesuai banner fisik" di dashboard.html).
+// Dipanggil SEKALI tiap ARRIVED->MOVING (lihat case ARRIVED di loop()),
+// begitu prevIdx/currIdx/nextIdx sudah diketahui dari onArrived(). Vektor
+// arah MASUK (prevIdx->currIdx) & arah KELUAR (currIdx->nextIdx) dihitung
+// cross/dot product-nya -> sudut belok bertanda (negatif=kanan, sesuai
+// konvensi matematika standar sumbu x-kanan/y-atas). Durasi manuver
+// PROPORSIONAL dari TURN_AROUND_MS yg sudah dikalibrasi fisik utk 180
+// derajat (TURN_AROUND_MS * sudut/180).
+//
+// Hop PERTAMA (prevIdx<0, blm ada arah datang) & hop TERAKHIR (nextIdx<0,
+// misi akan FINISHED) SENGAJA tidak dapat belok terjadwal -- sesuai
+// instruksi user 2026-09-14 ("pertama kali... lurus saja").
+void computeGeoTurn(){
+  geoTurnUntil = 0; geoTurnDir = 0;
+  if (!ENABLE_GEO_TURN) return;
+  if (prevIdx < 0 || nextIdx < 0) return;
+  float vinX  = POS_X[currIdx]-POS_X[prevIdx], vinY  = POS_Y[currIdx]-POS_Y[prevIdx];
+  float voutX = POS_X[nextIdx]-POS_X[currIdx], voutY = POS_Y[nextIdx]-POS_Y[currIdx];
+  float cross = vinX*voutY - vinY*voutX;
+  float dot   = vinX*voutX + vinY*voutY;
+  float angleDeg = atan2(cross, dot) * 180.0f / PI;
+  if (fabs(angleDeg) < GEO_TURN_MIN_DEG) return;  // hampir lurus, gak usah manuver
+  unsigned long dur = (unsigned long)(TURN_AROUND_MS * (fabs(angleDeg)/180.0f));
+  geoTurnDir = (angleDeg < 0) ? +1 : -1;  // cross/sudut negatif = belok KANAN
+  geoTurnUntil = millis() + dur;
+  Serial.printf("GeoTurn %c->%c->%c: sudut=%.1f derajat, arah=%s, durasi=%lums\n",
+    NNAME[prevIdx], NNAME[currIdx], NNAME[nextIdx], angleDeg,
+    geoTurnDir>0?"KANAN":"KIRI", dur);
 }
 
 // Broadcast transisi mode ke dashboard/CSV secara real-time -- cuma kirim
@@ -622,6 +671,8 @@ void wsEvent(uint8_t num,WStype_t type,uint8_t* payload,size_t len){
     else if(msg.startsWith("LOST_PHASE1_MS:"))        {LOST_PHASE1_MS=msg.substring(15).toInt();Serial.println("LOST_PHASE1_MS="+String(LOST_PHASE1_MS));}
     else if(msg.startsWith("TURN_AROUND_MS:"))        {TURN_AROUND_MS=msg.substring(15).toInt();Serial.println("TURN_AROUND_MS="+String(TURN_AROUND_MS));}
     else if(msg.startsWith("WRONG_NODE_MAX_RETRIES:")){WRONG_NODE_MAX_RETRIES=msg.substring(23).toInt();Serial.println("WRONG_NODE_MAX_RETRIES="+String(WRONG_NODE_MAX_RETRIES));}
+    else if(msg.startsWith("GEOTURN:"))               {ENABLE_GEO_TURN=(msg.substring(8).toInt()!=0);Serial.println("ENABLE_GEO_TURN="+String(ENABLE_GEO_TURN));}
+    else if(msg.startsWith("GEO_TURN_MIN_DEG:"))       {GEO_TURN_MIN_DEG=msg.substring(17).toFloat();Serial.println("GEO_TURN_MIN_DEG="+String(GEO_TURN_MIN_DEG));}
   }
 }
 
@@ -689,6 +740,15 @@ void loop(){
       // lastTurnDir, biar durasi TURN_AROUND_MS bisa diandalkan/di-tune.
       motorKanan();
       gLastMode="TURNAROUND"; gSpeedR=MOTOR_SPEED; gSpeedL=-MOTOR_SPEED;
+      reportPidMode();
+    } else if (millis() < geoTurnUntil) {
+      // Belok terjadwal ke node berikutnya (dihitung sekali di
+      // computeGeoTurn() begitu MOVING dimulai, dari geometri Graf
+      // Pameran) -- TAMBAHAN, dijalankan SEBELUM lineFollow() normal
+      // dilanjutkan buat segmen lurus ke node berikutnya.
+      if (geoTurnDir > 0) { motorKanan(); gSpeedR=MOTOR_SPEED; gSpeedL=-MOTOR_SPEED; }
+      else                { motorKiri();  gSpeedR=-MOTOR_SPEED; gSpeedL=MOTOR_SPEED; }
+      gLastMode="GEOTURN";
       reportPidMode();
     } else {
       if (turningAround) {
@@ -805,6 +865,7 @@ void loop(){
           robotState=IDLE;
         } else {
           resetPID();
+          computeGeoTurn();  // hitung belok terjadwal (kalau ada) buat hop berikutnya, lihat computeGeoTurn()
           robotState=MOVING;
           Serial.println("MOVING: mode=" + gLastMode);
           String s=jState("MOVING"); bcast(s);

@@ -86,13 +86,15 @@ EDGE_DIST = {
 }
 # Rute ACO terbaik per start node (hardcode, siklus tertutup balik ke start,
 # identik dengan hasil ACO offline -- bukan dihitung ulang di sini).
+# FIX 2026-09-14: rute start=F sebelumnya SALAH (F-A-B-C-D-E-F, 8.79m) --
+# siklus optimal sebenarnya F-B-A-E-D-C-F, 8.32m (dikonfirmasi user).
 ACO_ROUTES = {
     'A': ['A', 'B', 'F', 'C', 'D', 'E', 'A'],
     'B': ['B', 'F', 'C', 'D', 'E', 'A', 'B'],
     'C': ['C', 'D', 'E', 'A', 'B', 'F', 'C'],
     'D': ['D', 'E', 'A', 'B', 'F', 'C', 'D'],
     'E': ['E', 'A', 'B', 'F', 'C', 'D', 'E'],
-    'F': ['F', 'A', 'B', 'C', 'D', 'E', 'F'],
+    'F': ['F', 'B', 'A', 'E', 'D', 'C', 'F'],
 }
 
 

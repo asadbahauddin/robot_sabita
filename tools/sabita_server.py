@@ -62,6 +62,13 @@ TUNABLE_PARAMS = {
     "LOST_PHASE1_MS": 300,         # di bawah ini: maju pelan (celah kecil); di atasnya: cari ke kanan TANPA BATAS WAKTU (fase "menyerah/LOST" sudah dihapus 2026-09-14 atas permintaan user)
     "TURN_AROUND_MS": 15110,       # durasi putar ~180 derajat -- HASIL UKUR LANGSUNG (lihat catatan di atas)
     "WRONG_NODE_MAX_RETRIES": 3,   # maks percobaan putar-balik sebelum STUCK
+    # Belok terjadwal di persimpangan (2026-09-14): dihitung firmware dari
+    # geometri Graf Pameran (POS_X/POS_Y) begitu prevIdx->currIdx->nextIdx
+    # diketahui -- durasi PROPORSIONAL dari TURN_AROUND_MS (sudut/180).
+    # GEOTURN:0 di sini buat matikan cepat kalau ternyata meleset di lapangan,
+    # TANPA reflash.
+    "GEOTURN": 1,                  # 1=aktif, 0=nonaktif (fallback ke line-follower biasa)
+    "GEO_TURN_MIN_DEG": 20,        # di bawah sudut ini (hampir lurus) gak usah belok terjadwal
 }
 
 SENSOR_CSV_FIELDS = [
