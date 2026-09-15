@@ -223,6 +223,7 @@ int WRONG_NODE_MAX_RETRIES   = 3;      // biar gak puter2 selamanya kalau memang
 bool  ENABLE_GEO_TURN   = true;   // matikan cepat lewat Python (GEOTURN:0) kalau ternyata meleset, TANPA reflash -- lihat computeGeoTurn()
 float GEO_TURN_MIN_DEG  = 20.0f;  // di bawah sudut ini (hampir lurus) TIDAK usah belok terjadwal, biarkan lineFollow() saja
 unsigned long GEO_TURN_ARM_MS = 400;  // minimal waktu terus-menerus di jalur normal sblm trigger persimpangan boleh nyala (hindari kepicu zona keberangkatan sendiri)
+unsigned long ARRIVED_MIN_DWELL_MS = 3000;  // jeda minimum di tiap node walau audioFinished sudah true dari awal (mis. DFPlayer tidak siap) -- robot tidak langsung lanjut MOVING tanpa jeda sama sekali
 
 // Diset true saat QR ter-scan ketika robotState==MOVING (di loop()); dipakai
 // buat pelan-pelan sesaat sebelum sampai node. Direset di onArrived().
@@ -716,6 +717,7 @@ void wsEvent(uint8_t num,WStype_t type,uint8_t* payload,size_t len){
     else if(msg.startsWith("GEOTURN:"))               {ENABLE_GEO_TURN=(msg.substring(8).toInt()!=0);Serial.println("ENABLE_GEO_TURN="+String(ENABLE_GEO_TURN));}
     else if(msg.startsWith("GEO_TURN_MIN_DEG:"))       {GEO_TURN_MIN_DEG=msg.substring(17).toFloat();Serial.println("GEO_TURN_MIN_DEG="+String(GEO_TURN_MIN_DEG));}
     else if(msg.startsWith("GEO_TURN_ARM_MS:"))        {GEO_TURN_ARM_MS=msg.substring(16).toInt();Serial.println("GEO_TURN_ARM_MS="+String(GEO_TURN_ARM_MS));}
+    else if(msg.startsWith("ARRIVED_MIN_DWELL_MS:"))   {ARRIVED_MIN_DWELL_MS=msg.substring(21).toInt();Serial.println("ARRIVED_MIN_DWELL_MS="+String(ARRIVED_MIN_DWELL_MS));}
   }
 }
 
@@ -947,7 +949,12 @@ void loop(){
     case ARRIVED:
       checkDFP();  // polling status DFPlayer HANYA relevan saat ARRIVED (audioFinished cuma dibaca di sini)
       motorStop();
-      if(audioFinished||(millis()-arrTime>=AUDIO_TIMEOUT_MS)){
+      // Jeda minimum ARRIVED_MIN_DWELL_MS SELALU dipaksakan, walau
+      // audioFinished sudah true sejak awal (mis. DFPlayer gagal init,
+      // dfReady=false -- playNode() jadi no-op & audioFinished tidak
+      // pernah benar2 di-set false) -- tanpa ini robot langsung lanjut
+      // MOVING nyaris seketika, kelihatan seperti "tidak pernah berhenti".
+      if((audioFinished && (millis()-arrTime>=ARRIVED_MIN_DWELL_MS)) || (millis()-arrTime>=AUDIO_TIMEOUT_MS)){
         if(!audioFinished){Serial.println("Audio timeout");audioFinished=true;}
         // Selalu lanjut MOVING, termasuk setelah node ke-N -- misi baru
         // benar2 selesai setelah robot kembali ke titik awal (lihat case

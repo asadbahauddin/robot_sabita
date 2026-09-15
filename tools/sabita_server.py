@@ -65,6 +65,11 @@ TUNABLE_PARAMS = {
     "GEOTURN": 0,                  # 1=aktif, 0=nonaktif
     "GEO_TURN_MIN_DEG": 20,        # di bawah sudut ini (hampir lurus) gak usah belok terjadwal
     "GEO_TURN_ARM_MS": 400,        # minimal waktu di jalur normal sblm trigger persimpangan boleh nyala
+    # Jeda minimum di tiap node, dipaksakan walau audioFinished sudah true
+    # sejak awal (mis. DFPlayer gagal init) -- tanpa ini robot bisa lanjut
+    # MOVING nyaris seketika begitu sampai node, kelihatan seperti "tidak
+    # pernah berhenti" saat audio bermasalah.
+    "ARRIVED_MIN_DWELL_MS": 3000,
 }
 
 SENSOR_CSV_FIELDS = [
