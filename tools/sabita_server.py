@@ -313,6 +313,13 @@ def make_app(hub: Hub, dashboard_path, remote_path):
     app.router.add_get("/remote", handle_remote)
     app.router.add_get("/ws", handle_ws)
     app.router.add_get("/download-log", handle_download_log)
+    # Library pihak ketiga (Chart.js) di-vendor lokal, BUKAN dari CDN --
+    # dashboard cuma pernah dipakai di jaringan lokal ESP32 (AP tanpa akses
+    # internet), jadi <script src="cdn..."> gagal dimuat & bikin seluruh
+    # skrip dashboard berhenti (ReferenceError "Chart is not defined"
+    # sebelum WebSocket sempat connect -- kedua indikator jadi merah terus).
+    vendor_dir = os.path.join(os.path.dirname(dashboard_path), "vendor")
+    app.router.add_static("/vendor/", vendor_dir)
     return app
 
 
