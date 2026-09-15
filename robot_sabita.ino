@@ -62,6 +62,7 @@ HardwareSerial DFPSerial(1);
 DFRobotDFPlayerMini dfPlayer;
 bool dfReady      = false;
 bool audioFinished = true;
+unsigned long audioStartMs = 0;   // millis() saat playNode() terakhir memulai audio
 int  curVol       = 18;
 
 WebSocketsServer ws(81);
@@ -139,7 +140,6 @@ enum State { IDLE, ARRIVED, MOVING };
 State robotState  = IDLE;
 bool manualMode   = false;   // Mode pindah robot manual lewat dashboard
 unsigned long arrTime = 0;
-#define AUDIO_TIMEOUT_MS 15000
 
 bool  visited[N];
 int   nVisited = 0;
@@ -224,6 +224,8 @@ bool  ENABLE_GEO_TURN   = true;   // matikan cepat lewat Python (GEOTURN:0) kala
 float GEO_TURN_MIN_DEG  = 20.0f;  // di bawah sudut ini (hampir lurus) TIDAK usah belok terjadwal, biarkan lineFollow() saja
 unsigned long GEO_TURN_ARM_MS = 400;  // minimal waktu terus-menerus di jalur normal sblm trigger persimpangan boleh nyala (hindari kepicu zona keberangkatan sendiri)
 unsigned long ARRIVED_MIN_DWELL_MS = 3000;  // jeda minimum di tiap node walau audioFinished sudah true dari awal (mis. DFPlayer tidak siap) -- robot tidak langsung lanjut MOVING tanpa jeda sama sekali
+unsigned long AUDIO_TIMEOUT_MS  = 15000;  // batas atas nunggu audio kalau sinyal "selesai" dari DFPlayer gak pernah datang (mis. audio asli lebih panjang dari perkiraan)
+unsigned long AUDIO_MIN_PLAY_MS = 3000;   // sinyal "selesai" dari DFPlayer diabaikan kalau datang lebih cepat dari ini sejak play() -- filter sinyal palsu/noise
 
 // Diset true saat QR ter-scan ketika robotState==MOVING (di loop()); dipakai
 // buat pelan-pelan sesaat sebelum sampai node. Direset di onArrived().
@@ -579,6 +581,13 @@ void checkDFP(){
   if(!dfReady) return;
   if(dfPlayer.available()){
     if(dfPlayer.readType()==DFPlayerPlayFinished){
+      if(millis()-audioStartMs < AUDIO_MIN_PLAY_MS){
+        // Sinyal "selesai" datang terlalu cepat -- kemungkinan besar noise
+        // di jalur serial / kebiasaan modul DFPlayer(-klon), bukan audio
+        // yang benar-benar sudah tuntas. Abaikan, tetap tunggu.
+        Serial.println("Sinyal 'selesai' diabaikan (terlalu cepat, kemungkinan noise)");
+        return;
+      }
       audioFinished=true;
       String msg=jDfp("ready");
       bcast(msg);
@@ -590,6 +599,7 @@ void playNode(int idx){
   if(!dfReady||idx<0||idx>=N) return;
   dfPlayer.play(idx+1);
   audioFinished=false;
+  audioStartMs=millis();
   String msg=jDfp("playing",String(NART[idx]),String(NDESC[idx]));
   bcast(msg);
   Serial.println("Play: "+String(NART[idx]));
@@ -718,6 +728,8 @@ void wsEvent(uint8_t num,WStype_t type,uint8_t* payload,size_t len){
     else if(msg.startsWith("GEO_TURN_MIN_DEG:"))       {GEO_TURN_MIN_DEG=msg.substring(17).toFloat();Serial.println("GEO_TURN_MIN_DEG="+String(GEO_TURN_MIN_DEG));}
     else if(msg.startsWith("GEO_TURN_ARM_MS:"))        {GEO_TURN_ARM_MS=msg.substring(16).toInt();Serial.println("GEO_TURN_ARM_MS="+String(GEO_TURN_ARM_MS));}
     else if(msg.startsWith("ARRIVED_MIN_DWELL_MS:"))   {ARRIVED_MIN_DWELL_MS=msg.substring(21).toInt();Serial.println("ARRIVED_MIN_DWELL_MS="+String(ARRIVED_MIN_DWELL_MS));}
+    else if(msg.startsWith("AUDIO_TIMEOUT_MS:"))       {AUDIO_TIMEOUT_MS=msg.substring(17).toInt();Serial.println("AUDIO_TIMEOUT_MS="+String(AUDIO_TIMEOUT_MS));}
+    else if(msg.startsWith("AUDIO_MIN_PLAY_MS:"))      {AUDIO_MIN_PLAY_MS=msg.substring(18).toInt();Serial.println("AUDIO_MIN_PLAY_MS="+String(AUDIO_MIN_PLAY_MS));}
   }
 }
 

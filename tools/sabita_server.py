@@ -70,6 +70,13 @@ TUNABLE_PARAMS = {
     # MOVING nyaris seketika begitu sampai node, kelihatan seperti "tidak
     # pernah berhenti" saat audio bermasalah.
     "ARRIVED_MIN_DWELL_MS": 3000,
+    # Sinyal "audio selesai" dari DFPlayer kadang datang prematur/palsu
+    # (noise jalur serial, kebiasaan modul DFPlayer(-klon) tertentu) --
+    # AUDIO_MIN_PLAY_MS memfilter itu (diabaikan kalau datang lebih cepat
+    # dari nilai ini sejak audio mulai). AUDIO_TIMEOUT_MS tetap jadi batas
+    # atas kalau sinyal "selesai" beneran gak pernah datang sama sekali.
+    "AUDIO_TIMEOUT_MS": 15000,
+    "AUDIO_MIN_PLAY_MS": 3000,
 }
 
 SENSOR_CSV_FIELDS = [
