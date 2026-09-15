@@ -71,7 +71,7 @@ SENSOR_CSV_FIELDS = [
     "recv_iso", "t_rel_s", "state", "nav_prev", "nav_curr", "nav_next", "nav_step",
     "s1", "s2", "s3", "s4", "s6",
     "pos", "err", "corr", "mode", "speedR", "speedL", "kp", "ki", "kd", "arah", "last_qr",
-    "marker",
+    "marker", "geo_turn_deg", "geo_turn_dur_ms",
 ]
 
 

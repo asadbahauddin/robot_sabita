@@ -205,6 +205,7 @@ bool geoTurnPending = false;      // true = ada belokan terjadwal, NUNGGU persim
 bool geoTurnArmed = false;        // true = robot sudah kelihatan bener2 di jalur normal (bkn zona keberangkatan sendiri), trigger boleh nyala
 unsigned long geoTurnClearSince = 0;    // millis() sejak MULAI terus-menerus di jalur normal (hitCount<3)
 unsigned long geoTurnDurationMs = 0;    // durasi manuver, dipakai begitu trigger nyala
+float geoTurnAngleDeg = 0.0f;           // sudut belok terjadwal terakhir dihitung (0=hop ini gak ada belok) -- buat telemetry/CSV
 
 // ===== Parameter gerak yg bisa di-TUNING LIVE lewat WS (TANPA upload ulang
 // firmware) -- lihat handler pesan WS di wsEvent(). sabita_server.py bisa
@@ -242,6 +243,7 @@ void resetPID(){
   geoTurnArmed = false;
   geoTurnClearSince = 0;
   geoTurnDurationMs = 0;
+  geoTurnAngleDeg = 0.0f;
   userNudge = false;
   userNudgeDir = 0;
 }
@@ -256,7 +258,7 @@ void resetPID(){
 // Hop pertama (prevIdx<0, belum ada arah datang) & hop terakhir
 // (nextIdx<0) tidak dapat belok terjadwal, robot lurus/line-follower saja.
 void computeGeoTurn(){
-  geoTurnUntil = 0; geoTurnDir = 0; geoTurnDurationMs = 0;
+  geoTurnUntil = 0; geoTurnDir = 0; geoTurnDurationMs = 0; geoTurnAngleDeg = 0.0f;
   geoTurnPending = false; geoTurnArmed = false; geoTurnClearSince = 0;
   if (!ENABLE_GEO_TURN) return;
   if (prevIdx < 0 || nextIdx < 0) return;
@@ -269,6 +271,7 @@ void computeGeoTurn(){
   float dot   = vinX*voutX + vinY*voutY;
   float angleDeg = atan2(cross, dot) * 180.0f / PI;
   if (fabs(angleDeg) < GEO_TURN_MIN_DEG) return;  // hampir lurus, gak usah manuver
+  geoTurnAngleDeg = angleDeg;
   geoTurnDurationMs = (unsigned long)(TURN_AROUND_MS * (fabs(angleDeg)/180.0f));
   geoTurnDir = (angleDeg < 0) ? +1 : -1;  // cross/sudut negatif = belok KANAN
   geoTurnPending = true;  // TUNGGU sensor mendeteksi persimpangan fisik -- lihat loop()
@@ -463,6 +466,8 @@ String jSensor(int s1,int s2,int s3,int s4,int s6,String arah,
     +KN("speedR",String(speedR))+","
     +KN("speedL",String(speedL))+","
     +KN("lost_ms",String(lostMs))+","
+    +KN("geo_turn_deg",String(geoTurnAngleDeg,1))+","
+    +KN("geo_turn_dur_ms",String(geoTurnDurationMs))+","
     +KV("arah",arah)+"}";
 }
 String jQR(String data) {
